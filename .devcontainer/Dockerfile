@@ -22,7 +22,7 @@ RUN echo "machine freeswitch.signalwire.com login signalwire password $SIGNALWIR
 RUN echo "deb https://freeswitch.signalwire.com/repo/deb/freeswitch-1.8/ `lsb_release -sc` main" > /etc/apt/sources.list.d/freeswitch.list
 RUN echo "deb-src https://freeswitch.signalwire.com/repo/deb/freeswitch-1.8/ `lsb_release -sc` main" >> /etc/apt/sources.list.d/freeswitch.list
 
-RUN apt-get update && apt-get -y install libfreeswitch-dev librdkafka-dev libz-dev libssl-dev
+RUN apt-get update && apt-get -y install libfreeswitch-dev librdkafka-dev libsqlite3-dev libz-dev libssl-dev
 
 # Clean up
 RUN apt-get autoremove -y \

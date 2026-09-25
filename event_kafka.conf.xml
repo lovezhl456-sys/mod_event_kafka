@@ -8,5 +8,14 @@
 		<param name="buffer-size" value="16" /> 
 		<param name="compression" value="snappy"/>
 		<param name="event-filter" value=""/> <!-- set it to a valid list of events if you want to filter. Default empty doesn't filter any event -->
+		<!-- Additive resilience / security. Omitted keys use module defaults.
+		     Lab dialtest sample (toxiproxy bootstrap, CHANNEL_* filter): lab/event_kafka.fs.conf.xml -->
+		<param name="outbox-path" value="/var/lib/freeswitch/event_kafka_outbox.db"/>
+		<param name="mem-queue-max" value="10000"/>
+		<param name="outbox-max-rows" value="100000"/>
+		<param name="message-timeout-ms" value="30000"/>
+		<param name="enable-idempotence" value="1"/>
+		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL; empty = auto -->
+		<param name="ssl-ca-location" value=""/>
 	</settings>
  </configuration>

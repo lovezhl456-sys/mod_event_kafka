@@ -1,11 +1,11 @@
 # Customise these as appropriate
 MODNAME = mod_event_kafka.so
-MODOBJ = mod_event_kafka.o
+MODOBJ = mod_event_kafka.o src/kafka_outbox.o src/kafka_pipeline.o
 MODCFLAGS = -Wall -Werror 
-MODLDFLAGS = -lssl 
+MODLDFLAGS = -lssl -lsqlite3 -lrdkafka -lpthread 
 
 CXX = g++
-CXXFLAGS = -fPIC -g -ggdb -I/usr/include  `pkg-config --cflags freeswitch` $(MODCFLAGS) -std=c++17 -fpermissive -o2
+CXXFLAGS = -fPIC -g -ggdb -I/usr/include -Iinclude `pkg-config --cflags freeswitch` $(MODCFLAGS) -std=c++17 -fpermissive -O2
 LDFLAGS = `pkg-config --libs freeswitch` -lrdkafka -lz -lpthread -lrt $(MODLDFLAGS) 
 
 .PHONY: all
@@ -14,8 +14,8 @@ all: $(MODNAME)
 $(MODNAME): $(MODOBJ)
 	@$(CXX) -shared -o $@ $(MODOBJ) $(LDFLAGS)
 
-.cpp.o: $<
-	@$(CXX) $(CXXFLAGS) -o $@ -c $<
+%.o: %.cpp
+	@$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 .PHONY: clean
 clean:

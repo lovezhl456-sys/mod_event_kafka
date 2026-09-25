@@ -35,8 +35,10 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <memory>
 #include <switch.h>
 #include "mod_event_kafka.hpp"
+#include "kafka_pipeline.hpp"
 
 namespace mod_event_kafka {
 
@@ -61,6 +63,21 @@ namespace mod_event_kafka {
                             "snappy", NULL, "snappy / lz4 ", "Compression"),
         SWITCH_CONFIG_ITEM("event-filter", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.event_filter,
                             "", NULL, "comma separated value of event names", "Event Filter"),
+
+        SWITCH_CONFIG_ITEM("outbox-path", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.outbox_path,
+                            "/var/lib/freeswitch/event_kafka_outbox.db", NULL, "outbox-path", "SQLite outbox path"),
+        SWITCH_CONFIG_ITEM("mem-queue-max", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.mem_queue_max,
+                            10000, NULL, "mem-queue-max", "Bounded in-memory queue depth"),
+        SWITCH_CONFIG_ITEM("outbox-max-rows", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.outbox_max_rows,
+                            100000, NULL, "outbox-max-rows", "Max durable outbox rows"),
+        SWITCH_CONFIG_ITEM("message-timeout-ms", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.message_timeout_ms,
+                            30000, NULL, "message-timeout-ms", "Topic message.timeout.ms (must be applied)"),
+        SWITCH_CONFIG_ITEM("enable-idempotence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.enable_idempotence,
+                            1, NULL, "enable-idempotence", "librdkafka enable.idempotence"),
+        SWITCH_CONFIG_ITEM("security-protocol", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.security_protocol,
+                            "", NULL, "security-protocol", "PLAINTEXT/SASL_PLAINTEXT/SASL_SSL/SSL"),
+        SWITCH_CONFIG_ITEM("ssl-ca-location", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.ssl_ca_location,
+                            "", NULL, "ssl-ca-location", "ssl.ca.location"),
         SWITCH_CONFIG_ITEM_END()
     };
 
@@ -78,84 +95,47 @@ namespace mod_event_kafka {
     }
 
 
+
     class KafkaEventPublisher {
-
-        
         public:
-        KafkaEventPublisher(){
-
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "KafkaEventPublisher Initialising...");
-
+        KafkaEventPublisher() {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "KafkaEventPublisher Initialising (outbox pipeline)...");
             load_config(SWITCH_FALSE);
-            
-            conf = rd_kafka_conf_new();
 
-            if (rd_kafka_conf_set(conf, "metadata.broker.list", globals.brokers, errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-               switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-            }
-
-            if (rd_kafka_conf_set(conf, "queue.buffering.max.messages", std::to_string(globals.buffer_size).c_str(), errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-            }
-
-            if (rd_kafka_conf_set(conf, "max.in.flight", "1000", errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-            }
-
-            if (rd_kafka_conf_set(conf, "compression.codec", globals.compression, errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-            }
-
-            if (globals.username && globals.username[0] != '\0') {
-                //username is set, set authentication params
-                if (rd_kafka_conf_set(conf, "sasl.mechanism", "PLAIN", errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-                }
-
-                if (rd_kafka_conf_set(conf, "security.protocol", "SASL_PLAINTEXT", errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-                }
-
-                if (rd_kafka_conf_set(conf, "sasl.username", globals.username, errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-                }
-
-                if (rd_kafka_conf_set(conf, "sasl.password", globals.password, errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, errstr);
-                }
-            }
-
-            rd_kafka_conf_set_dr_msg_cb(conf, dr_msg_cb);
-
-            producer = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
-            if (!producer) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to create new producer: %s \n", errstr);
-            }
-
-             //build topic if not defined
             if (globals.topic && globals.topic[0] == '\0') {
                 std::string topic_str = std::string(globals.topic_prefix) + "_" + std::string(switch_core_get_switchname());
                 strcpy(globals.topic, topic_str.c_str());
             }
-
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "KafkaEventPublisher Topic : %s \n", globals.topic);
 
-            rd_kafka_topic_conf_t *tconf = rd_kafka_topic_conf_new();
-            rd_kafka_topic_conf_set(tconf, "message.timeout.ms", "30000", NULL, 0);
+            event_kafka::PipelineConfig cfg;
+            cfg.brokers = globals.brokers ? globals.brokers : "localhost:9092";
+            cfg.topic = globals.topic ? globals.topic : "fs_events";
+            cfg.username = globals.username ? globals.username : "";
+            cfg.password = globals.password ? globals.password : "";
+            cfg.security_protocol = globals.security_protocol ? globals.security_protocol : "";
+            cfg.ssl_ca_location = globals.ssl_ca_location ? globals.ssl_ca_location : "";
+            cfg.compression = globals.compression ? globals.compression : "snappy";
+            cfg.outbox_path = globals.outbox_path ? globals.outbox_path : "/var/lib/freeswitch/event_kafka_outbox.db";
+            cfg.buffer_size = globals.buffer_size > 0 ? globals.buffer_size : 100000;
+            cfg.mem_queue_max = static_cast<size_t>(globals.mem_queue_max > 0 ? globals.mem_queue_max : 10000);
+            cfg.outbox_max_rows = globals.outbox_max_rows > 0 ? globals.outbox_max_rows : 100000;
+            cfg.message_timeout_ms = globals.message_timeout_ms > 0 ? globals.message_timeout_ms : 30000;
+            cfg.enable_idempotence = globals.enable_idempotence != 0;
 
-            topic = rd_kafka_topic_new(producer, globals.topic, NULL);
-            if (!topic) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to create topic %s object: %s \n", globals.topic,  rd_kafka_err2str(rd_kafka_last_error()));
+            pipeline_.reset(new event_kafka::KafkaPipeline(cfg));
+            std::string err;
+            if (!pipeline_->start(err)) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "KafkaPipeline start failed: %s\n", err.c_str());
+                _initialized = false;
+                return;
             }
-
             _initialized = true;
         }
 
         void PublishEvent(switch_event_t *event) {
-
             char *uuid = switch_event_get_header(event, "Channel-Call-UUID");
             char *event_json = malloc_new<char>();
-
             const switch_status_t json_status = switch_event_serialize_json(event, &event_json);
             if (json_status == SWITCH_STATUS_FALSE) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "json serialization failed in switch\n");
@@ -163,90 +143,46 @@ namespace mod_event_kafka {
                 return;
             }
 
-            if(_initialized){
-                int resp = send(event_json, uuid ,0);
-                if (resp == -1){
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to produce, with error %s \n", rd_kafka_err2str(rd_kafka_last_error()));
-                } else {
-                    //size_t len = strlen(event_json);
-                    //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,"Produced message (%zu bytes)", len);
-                }
-                rd_kafka_poll(producer, 0);
-            } else {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "PublishEvent without active KafkaPublisher\n %s \n",event_json);
-                delete uuid;
+            if (!_initialized || !pipeline_) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "PublishEvent without active KafkaPublisher\n %s \n", event_json);
                 std::free(event_json);
+                return;
+            }
+
+            // Deep-copy into pipeline (payload string ctor copies); free FS buffer after enqueue attempt.
+            std::string payload(event_json);
+            std::string key = uuid ? std::string(uuid) : std::string();
+            std::string call_uuid = key;
+            std::string event_id;
+            std::string err;
+            const bool ok = pipeline_->enqueue(payload, key, call_uuid, event_id, err);
+            std::free(event_json);
+            if (!ok) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+                                  "event enqueue rejected (%s); metrics rejected_mem=%llu\n",
+                                  err.c_str(),
+                                  (unsigned long long)pipeline_->metrics().rejected_mem_full.load());
+            } else {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
+                                  "enqueued event_id=%s key=%s\n", event_id.c_str(), key.c_str());
             }
         }
 
-        void Shutdown(){
-            //flush within 100ms
-            rd_kafka_flush(producer, 100);
+        void Shutdown() {
+            if (pipeline_) pipeline_->stop();
         }
 
-        ~KafkaEventPublisher(){
+        ~KafkaEventPublisher() {
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "KafkaEventPublisher Destroyed\n");
-            rd_kafka_topic_destroy(topic);
-            rd_kafka_destroy(producer);
+            if (pipeline_) {
+                pipeline_->stop();
+                pipeline_.reset();
+            }
         }
 
         private:
-
-        static void dr_msg_cb (rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque) {
-            if (rkmessage->err) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, " Message delivery failed %s \n",rd_kafka_err2str(rkmessage->err));
-            }
-            else {
-                //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,  "Message delivered (%zd bytes, partition %d, offset  %" PRId64 ") \n",rkmessage->len, rkmessage->partition, rkmessage->offset);
-                // rd_kafka_message_destroy ((rd_kafka_message_t *)rkmessage);
-            }
-        }
-
-        int send(char *data, char *key, int currentCount){
-            if(++currentCount <= max_retry_limit){
-                int key_length = key == NULL ? 0 : strlen(key);
-                int result = rd_kafka_produce(topic, RD_KAFKA_PARTITION_UA,
-                            RD_KAFKA_MSG_F_FREE /* Auto Clear Payload */,
-                            (void *)data, strlen(data),
-                            (const void *)key, key_length,
-                            /* Message opaque, provided in
-                             * delivery report callback as
-                             * msg_opaque. */
-                            NULL);
-
-                auto last_error = rd_kafka_last_error();
-                if(result == 0){
-                    return result;
-                } else if(last_error == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,"queue.buffering.max.messages limit reached, waiting 1sec to flush out.\n");
-                    std::thread([this, data, currentCount, key]() { 
-                        //localqueue is full, hold and flush them.
-                        rd_kafka_poll(producer, 1000/*block for max 1000ms*/);
-                        send(data, key, currentCount); 
-                    })
-                    .detach(); //TODO: limit number of forked threads
-                    return result;
-                } else {
-                    //not handing other unknown errors
-                    return result;
-                }
-            } else {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "KafkaEventPublisher send max_retry_limit hit.\n");
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "%s\n",data);
-                // delete data; //TODO: Doesn't work, throws segment fault.
-                // delete key;
-            }
-            return 0;    
-        }   
-
-        int max_retry_limit = 3;
         bool _initialized = false;
-
-        rd_kafka_t *producer;    
-        rd_kafka_topic_t *topic;  
-        rd_kafka_conf_t *conf; 
-        char errstr[512]; 
-       
+        std::unique_ptr<event_kafka::KafkaPipeline> pipeline_;
     };
 
     class KafkaModule {
