@@ -70,6 +70,8 @@ namespace mod_event_kafka {
                             10000, NULL, "mem-queue-max", "Bounded in-memory queue depth"),
         SWITCH_CONFIG_ITEM("outbox-max-rows", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.outbox_max_rows,
                             100000, NULL, "outbox-max-rows", "Max durable outbox rows"),
+        SWITCH_CONFIG_ITEM("outbox-ttl-ms", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.outbox_ttl_ms,
+                            120000, NULL, "outbox-ttl-ms", "Expire pending rows older than this; 0 disables"),
         SWITCH_CONFIG_ITEM("message-timeout-ms", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.message_timeout_ms,
                             30000, NULL, "message-timeout-ms", "Topic message.timeout.ms (must be applied)"),
         SWITCH_CONFIG_ITEM("enable-idempotence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.enable_idempotence,
@@ -88,8 +90,8 @@ namespace mod_event_kafka {
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Could not open event_kafka.conf\n");
             return SWITCH_STATUS_FALSE;
         } else {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "event_kafka.conf loaded [brokers: %s, topic/topic_prefix: %s/%s, username: %s, buffer-size: %d, compression: %s]", 
-            globals.brokers, globals.topic, globals.topic_prefix, globals.username, globals.buffer_size, globals.compression);
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "event_kafka.conf loaded [brokers: %s, topic/topic_prefix: %s/%s, username: %s, buffer-size: %d, compression: %s, outbox-ttl-ms: %d]", 
+            globals.brokers, globals.topic, globals.topic_prefix, globals.username, globals.buffer_size, globals.compression, globals.outbox_ttl_ms);
         }
         return SWITCH_STATUS_SUCCESS;
     }
@@ -122,6 +124,8 @@ namespace mod_event_kafka {
             cfg.outbox_max_rows = globals.outbox_max_rows > 0 ? globals.outbox_max_rows : 100000;
             cfg.message_timeout_ms = globals.message_timeout_ms > 0 ? globals.message_timeout_ms : 30000;
             cfg.enable_idempotence = globals.enable_idempotence != 0;
+            // 0 disables expiry. Negative is not a configured value; use the default.
+            cfg.outbox_ttl_ms = globals.outbox_ttl_ms < 0 ? 120000 : globals.outbox_ttl_ms;
 
             pipeline_.reset(new event_kafka::KafkaPipeline(cfg));
             std::string err;

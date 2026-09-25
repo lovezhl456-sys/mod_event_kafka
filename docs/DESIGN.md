@@ -18,6 +18,7 @@ Bounded memory queue (deep-copied payload + key + event_id)
     ▼
 Fixed worker thread(s)
     │  1) BEGIN; INSERT outbox (pending); COMMIT   ← durable
+    │  1b) if outbox-ttl-ms > 0, expire pending rows older than TTL (dead / expired_ttl) — not produced
     │  2) rd_kafka_produce (copy / owned buffer)
     │  3) mark state=in_flight
     ▼
@@ -70,6 +71,7 @@ Delete row only after delivery success **and** local ACK transaction commits.
 | Transient | disconnect, QUEUE_FULL, transport timeout | keep row, exponential backoff (+jitter), metrics |
 | Fatal client | `RD_KAFKA_RESP_ERR__FATAL` | destroy/recreate producer+topic under mutex; outbox retained |
 | Permanent | auth fail, topic auth, invalid msg | state=`dead`, keep evidence in `last_error`, alert metric; no tight loop |
+| Stale | pending age `> outbox-ttl-ms` | state=`dead`, `last_error=expired_ttl`, metric `outbox_expired`; do not produce. Intentional drop of stale telephony state. `0` disables |
 
 ### Config compatibility
 
@@ -90,6 +92,7 @@ Additive (defaults safe):
 | `security-protocol` | auto / `SASL_PLAINTEXT` when user set | allow `SASL_SSL`/`SSL` |
 | `ssl-ca-location` | empty | TLS |
 | `acks` | `all` | durability |
+| `outbox-ttl-ms` | `120000` | Pending rows with `now_ms - created_at_ms > outbox-ttl-ms` are marked `dead` (`expired_ttl`) and not produced. `0` disables. Outages **≤ TTL** still heal and drain with no reload |
 
 Message **key** remains `Channel-Call-UUID` when present (unchanged).  
 Stable **event_id** is a UUIDv4 created at enqueue, stored in outbox, and attached as Kafka header `x-fs-event-id` (body JSON unchanged for format compatibility). Consumers dedupe on that header.
@@ -101,12 +104,14 @@ Stable **event_id** is a UUIDv4 created at enqueue, stored in outbox, and attach
 3. **Same-call ordering**: worker sends per-`call_uuid` FIFO by `created_at_ms` when key present; cross-call unordered. At-least-once + header dedupe.
 4. **Capacity exhausted**: reject new enqueue, increment `event_kafka_rejected_total`, log at WARNING/CRIT — never silent drop, never block media threads indefinitely.
 5. **Shutdown**: unbind events → stop accepting enqueue → worker drains memory into outbox → flush/poll until idle or timeout → join threads → destroy producer. Un-ACKed rows remain on disk for next load.
+6. **Outbox TTL**: expiry applies only to `pending` rows past `outbox-ttl-ms`. In-flight rows still ACK (delete) or retry. A retry that is already past the TTL is expired on the next pass and is not produced again. Non-expired rows keep the same durable ACK rule. Expired dead letters are not in the due scan, so new pending work is preferred; if they would fill the outbox, they are removed so a new insert is not rejected. Permanent `dead` rows and live rows are not deleted to make room.
 
 ### Metrics (log + optional JSON file counters)
 
 - `enqueued`, `rejected_mem_full`, `rejected_disk_full`
 - `outbox_pending`, `outbox_in_flight`, `outbox_dead`
 - `produce_ok`, `produce_fail`, `delivery_fail`, `producer_rebuilds`
+- `outbox_expired` (pending rows marked `expired_ttl`)
 - `oldest_pending_age_ms`
 
 ## Test plan summary

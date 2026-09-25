@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -295,6 +296,260 @@ static void test_baseline_smoke() {
   }
 }
 
+static event_kafka::OutboxRecord make_row(const std::string& id, const std::string& payload,
+                                           int64_t created_at_ms) {
+  event_kafka::OutboxRecord r;
+  r.event_id = id;
+  r.topic = "fs_events";
+  r.msg_key = "k";
+  r.payload = payload;
+  r.call_uuid = "call";
+  r.created_at_ms = created_at_ms;
+  r.next_attempt_at_ms = created_at_ms;
+  return r;
+}
+
+// U-TTL: enabled TTL dead-letters old rows and does not leave them due;
+// TTL 0 still returns old rows for produce. Age == TTL is kept (> not >=).
+static void test_outbox_ttl() {
+  const int64_t ttl = 120000;
+  const int64_t now = 1700000000000LL;
+  const std::string db = "/tmp/event_kafka_ttl.db";
+  rm_db(db);
+  event_kafka::Outbox box(db, 100, 1024 * 1024);
+  std::string err;
+  CHECK(box.open(err));
+
+  auto over = make_row("ttl-over", "{\"Event-Name\":\"CHANNEL_HANGUP\"}", now - ttl - 1);
+  auto eq = make_row("ttl-eq", "{\"Event-Name\":\"CHANNEL_ANSWER\"}", now - ttl);
+  auto fresh = make_row("ttl-fresh", "{\"Event-Name\":\"CHANNEL_CREATE\"}", now);
+  CHECK(box.insert_pending(over, err));
+  CHECK(box.insert_pending(eq, err));
+  CHECK(box.insert_pending(fresh, err));
+
+  CHECK(box.expire_ttl(now, ttl, err) == 1);
+  event_kafka::OutboxRecord got;
+  CHECK(box.get("ttl-over", got));
+  CHECK(got.state == event_kafka::OutboxState::Dead);
+  CHECK(got.last_error == "expired_ttl");
+  CHECK(got.attempts == 0);
+
+  auto due = box.fetch_due(now + 1000, 10);
+  CHECK(due.size() == 2);
+  CHECK(due[0].event_id != "ttl-over");
+  CHECK(due[1].event_id != "ttl-over");
+  CHECK(box.get("ttl-eq", got));
+  CHECK(got.state == event_kafka::OutboxState::Pending);
+  CHECK(got.last_error != "expired_ttl");
+  CHECK(box.stats().dead == 1);
+  CHECK(box.stats().pending == 2);
+
+  // In-flight rows stay on the ACK path. Expiry does not delete or dead-letter them.
+  auto inflight = make_row("ttl-inflight", "{\"n\":1}", now - ttl - 50);
+  CHECK(box.insert_pending(inflight, err));
+  CHECK(box.mark_in_flight("ttl-inflight", err));
+  CHECK(box.expire_ttl(now, ttl, err) == 0);
+  CHECK(box.get("ttl-inflight", got));
+  CHECK(got.state == event_kafka::OutboxState::InFlight);
+  CHECK(box.mark_acked("ttl-inflight", err));
+  CHECK(!box.get("ttl-inflight", got));
+
+  // Retry back to pending after the TTL is expired and not due for produce.
+  auto retry = make_row("ttl-retry", "{\"n\":2}", now - ttl - 10);
+  CHECK(box.insert_pending(retry, err));
+  CHECK(box.mark_in_flight("ttl-retry", err));
+  CHECK(box.mark_retry("ttl-retry", now, "broker down", err));
+  CHECK(box.expire_ttl(now, ttl, err) == 1);
+  CHECK(box.get("ttl-retry", got));
+  CHECK(got.state == event_kafka::OutboxState::Dead);
+  CHECK(got.last_error == "expired_ttl");
+  due = box.fetch_due(now + 1000, 10);
+  for (const auto& row : due) CHECK(row.event_id != "ttl-retry");
+  box.close();
+
+  // TTL 0: ancient rows stay pending and are still due (produce path unchanged).
+  const std::string db0 = "/tmp/event_kafka_ttl0.db";
+  rm_db(db0);
+  event_kafka::Outbox box0(db0, 100, 1024 * 1024);
+  CHECK(box0.open(err));
+  auto ancient = make_row("ttl0-old", "{\"Event-Name\":\"CHANNEL_HANGUP\"}", 1);
+  CHECK(box0.insert_pending(ancient, err));
+  CHECK(box0.expire_ttl(now, 0, err) == 0);
+  CHECK(box0.get("ttl0-old", got));
+  CHECK(got.state == event_kafka::OutboxState::Pending);
+  CHECK(got.last_error != "expired_ttl");
+  due = box0.fetch_due(now, 10);
+  CHECK(due.size() == 1);
+  CHECK(due[0].event_id == "ttl0-old");
+  box0.close();
+}
+
+// Expired dead letters yield capacity to new events. Permanent dead and live rows do not.
+static void test_expired_does_not_block_new_work() {
+  const std::string db = "/tmp/event_kafka_ttl_cap.db";
+  rm_db(db);
+  event_kafka::Outbox box(db, /*max_rows=*/2, /*max_bytes=*/1024 * 1024);
+  std::string err;
+  CHECK(box.open(err));
+  const int64_t now = 1700000000000LL;
+  const int64_t ttl = 120000;
+
+  auto perm = make_row("perm-dead", "p", now);
+  CHECK(box.insert_pending(perm, err));
+  CHECK(box.mark_dead("perm-dead", "auth failed", err));
+
+  auto expired = make_row("exp-dead", "e", now - ttl - 1);
+  CHECK(box.insert_pending(expired, err));
+  CHECK(box.expire_ttl(now, ttl, err) == 1);
+  CHECK(box.stats().dead == 2);
+
+  auto fresh = make_row("fresh", "n", now);
+  CHECK(box.insert_pending(fresh, err));
+  event_kafka::OutboxRecord got;
+  CHECK(box.get("perm-dead", got));
+  CHECK(got.state == event_kafka::OutboxState::Dead);
+  CHECK(got.last_error == "auth failed");
+  CHECK(!box.get("exp-dead", got));
+  CHECK(box.get("fresh", got));
+  CHECK(got.state == event_kafka::OutboxState::Pending);
+
+  // Live rows still reject when they alone fill the outbox.
+  auto extra = make_row("extra", "x", now);
+  CHECK(!box.insert_pending(extra, err));
+  CHECK(err.find("capacity") != std::string::npos);
+  CHECK(box.get("fresh", got));
+  CHECK(box.get("perm-dead", got));
+  box.close();
+
+  const std::string db_bytes = "/tmp/event_kafka_ttl_cap_bytes.db";
+  rm_db(db_bytes);
+  event_kafka::Outbox bytes(db_bytes, 100, /*max_bytes=*/48);
+  CHECK(bytes.open(err));
+  auto fat = make_row("fat-exp", std::string(40, 'a'), now - ttl - 1);
+  CHECK(bytes.insert_pending(fat, err));
+  CHECK(bytes.expire_ttl(now, ttl, err) == 1);
+  auto neu = make_row("neu", std::string(40, 'b'), now);
+  CHECK(bytes.insert_pending(neu, err));
+  CHECK(!bytes.get("fat-exp", got));
+  CHECK(bytes.get("neu", got));
+  CHECK(got.state == event_kafka::OutboxState::Pending);
+  bytes.close();
+}
+
+static event_kafka::PipelineConfig ttl_pipe_cfg(const std::string& db, int64_t ttl_ms) {
+  event_kafka::PipelineConfig cfg;
+  cfg.brokers = "127.0.0.1:1";
+  cfg.topic = "fs_events";
+  cfg.outbox_path = db;
+  cfg.mem_queue_max = 100;
+  cfg.outbox_max_rows = 1000;
+  cfg.outbox_max_bytes = 1024 * 1024;
+  cfg.worker_idle_ms = 20;
+  cfg.poll_ms = 20;
+  cfg.message_timeout_ms = 800;
+  cfg.enable_idempotence = false;
+  cfg.outbox_ttl_ms = ttl_ms;
+  return cfg;
+}
+
+static bool spin_until(const std::function<bool()>& pred, int ms) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (pred()) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return pred();
+}
+
+// Worker: TTL enabled does not produce an old row; TTL 0 does.
+static void test_pipeline_ttl_produce() {
+  const int64_t ttl = 120000;
+  const int64_t now = event_kafka::wall_now_ms();
+
+  {
+    const std::string db = "/tmp/event_kafka_ttl_pipe.db";
+    rm_db(db);
+    {
+      event_kafka::Outbox box(db, 1000, 1024 * 1024);
+      std::string err;
+      CHECK(box.open(err));
+      auto old = make_row("pipe-old", "{\"Event-Name\":\"CHANNEL_HANGUP\"}", now - ttl - 5);
+      CHECK(box.insert_pending(old, err));
+      box.close();
+    }
+
+    event_kafka::KafkaPipeline pipe(ttl_pipe_cfg(db, ttl));
+    std::string err;
+    if (!pipe.start(err)) {
+      std::cerr << "FAIL pipeline start (ttl): " << err << "\n";
+      ++failures;
+      return;
+    }
+    std::string fresh_id;
+    CHECK(pipe.enqueue("{\"Event-Name\":\"CHANNEL_CREATE\"}", "k", "call-new", fresh_id, err));
+    const bool saw = spin_until([&] {
+      return pipe.metrics().outbox_expired.load() >= 1 &&
+             (pipe.metrics().produce_ok.load() + pipe.metrics().produce_fail.load()) >= 1;
+    }, 3000);
+    CHECK(saw);
+    pipe.stop();
+
+    CHECK(pipe.metrics().outbox_expired.load() >= 1);
+    CHECK(pipe.metrics().produce_ok.load() + pipe.metrics().produce_fail.load() >= 1);
+
+    event_kafka::Outbox box(db, 1000, 1024 * 1024);
+    CHECK(box.open(err));
+    event_kafka::OutboxRecord old;
+    CHECK(box.get("pipe-old", old));
+    CHECK(old.state == event_kafka::OutboxState::Dead);
+    CHECK(old.last_error == "expired_ttl");
+    CHECK(old.attempts == 0);
+    event_kafka::OutboxRecord fresh;
+    if (box.get(fresh_id, fresh)) {
+      CHECK(!(fresh.state == event_kafka::OutboxState::Dead && fresh.last_error == "expired_ttl"));
+    }
+    box.close();
+  }
+
+  {
+    const std::string db = "/tmp/event_kafka_ttl0_pipe.db";
+    rm_db(db);
+    {
+      event_kafka::Outbox box(db, 1000, 1024 * 1024);
+      std::string err;
+      CHECK(box.open(err));
+      auto old = make_row("pipe0-old", "{\"Event-Name\":\"CHANNEL_HANGUP\"}", now - ttl - 5);
+      CHECK(box.insert_pending(old, err));
+      box.close();
+    }
+
+    event_kafka::KafkaPipeline pipe(ttl_pipe_cfg(db, 0));
+    std::string err;
+    if (!pipe.start(err)) {
+      std::cerr << "FAIL pipeline start (ttl 0): " << err << "\n";
+      ++failures;
+      return;
+    }
+    const bool saw = spin_until([&] {
+      return (pipe.metrics().produce_ok.load() + pipe.metrics().produce_fail.load()) >= 1;
+    }, 3000);
+    CHECK(saw);
+    pipe.stop();
+
+    CHECK(pipe.metrics().outbox_expired.load() == 0);
+    CHECK(pipe.metrics().produce_ok.load() + pipe.metrics().produce_fail.load() >= 1);
+
+    event_kafka::Outbox box(db, 1000, 1024 * 1024);
+    CHECK(box.open(err));
+    event_kafka::OutboxRecord old;
+    if (box.get("pipe0-old", old)) {
+      CHECK(old.last_error != "expired_ttl");
+      CHECK(old.attempts >= 1);
+    }
+    box.close();
+  }
+}
+
 int main() {
   test_baseline_smoke();
   test_own_queue_deepcopy();
@@ -302,6 +557,9 @@ int main() {
   test_byte_cap();
   test_concurrent_enqueue();
   test_safe_unload();
+  test_outbox_ttl();
+  test_expired_does_not_block_new_work();
+  test_pipeline_ttl_produce();
 
   if (failures) {
     std::cerr << failures << " checks failed\n";

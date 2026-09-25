@@ -48,6 +48,12 @@ class Outbox {
                  std::string& err);
   bool requeue_in_flight(std::string& err);
 
+  // Pending rows with (now_ms - created_at_ms) > ttl_ms become dead / expired_ttl.
+  // ttl_ms <= 0 disables expiry and returns 0. Returns the number of rows
+  // updated, or -1 on error. In-flight rows are left for ACK or retry.
+  int expire_ttl(int64_t now_ms, int64_t ttl_ms, std::string& err);
+  bool get(const std::string& event_id, OutboxRecord& out) const;
+
   OutboxStats stats() const;
   int64_t oldest_pending_age_ms(int64_t now) const;
 
