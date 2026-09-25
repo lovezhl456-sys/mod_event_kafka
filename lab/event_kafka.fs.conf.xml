@@ -1,0 +1,22 @@
+<configuration name="event_kafka.conf" description="Kafka Event Configuration">
+	<settings>
+		<!-- Phase2 lab: toxiproxy only — do not point at production Kafka -->
+		<param name="bootstrap-servers" value="127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094"/>
+		<param name="topic-prefix" value=""/>
+		<param name="topic" value="fs_events" />  <!-- set either topic-prefix or topic; topic wins if both set -->
+		<param name="username" value="" />
+		<param name="password" value="" />
+		<param name="buffer-size" value="100000" />
+		<param name="compression" value="snappy"/>
+		<!-- dialtest originate: CHANNEL_* keeps event volume bounded; empty = ALL -->
+		<param name="event-filter" value="SWITCH_EVENT_CHANNEL_CREATE,SWITCH_EVENT_CHANNEL_ANSWER,SWITCH_EVENT_CHANNEL_HANGUP,SWITCH_EVENT_CHANNEL_HANGUP_COMPLETE"/>
+		<!-- Additive (optional) resilience / security -->
+		<param name="outbox-path" value="/usr/local/freeswitch/var/lib/freeswitch/db/event_kafka_outbox.db"/>
+		<param name="mem-queue-max" value="10000"/>
+		<param name="outbox-max-rows" value="100000"/>
+		<param name="message-timeout-ms" value="30000"/>
+		<param name="enable-idempotence" value="1"/>
+		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL; empty = auto -->
+		<param name="ssl-ca-location" value=""/>
+	</settings>
+ </configuration>

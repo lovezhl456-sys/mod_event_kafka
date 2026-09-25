@@ -1,7 +1,7 @@
 #ifndef MOD_EVENT_KAFKA_H
 #define MOD_EVENT_KAFKA_H
 
-extern "C" { 
+extern "C" {
 	#include "librdkafka/rdkafka.h"
 }
 
@@ -16,6 +16,14 @@ namespace mod_event_kafka {
 		int buffer_size;
 		char *compression;
 		char *event_filter;
+		/* Additive resilience settings (defaults preserve prior behavior dimensions) */
+		char *outbox_path;
+		char *security_protocol;
+		char *ssl_ca_location;
+		int mem_queue_max;
+		int outbox_max_rows;
+		int message_timeout_ms;
+		int enable_idempotence;
 	} globals;
 
 
@@ -34,5 +42,4 @@ namespace mod_event_kafka {
 		SWITCH_MODULE_DEFINITION(mod_event_kafka, mod_event_kafka_load, mod_event_kafka_shutdown, NULL);
 	};
 };
-
 #endif // MOD_EVENT_KAFKA_H

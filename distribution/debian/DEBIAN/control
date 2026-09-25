@@ -3,7 +3,7 @@ Version: 1._VERSION_
 Architecture: all
 Section: base
 Priority: standard
-Depends: librdkafka1 (>= 0.9.3-1), freeswitch (= _FSVERSION_)
+Depends: librdkafka1 (>= 1.0.0), libsqlite3-0, freeswitch (= _FSVERSION_)
 Conflicts: fk-librdkafka
 Maintainer: Kinshuk Bairagi <me@kinshuk.in>
 Description: Publish FreeSwitch Event to Kafka
