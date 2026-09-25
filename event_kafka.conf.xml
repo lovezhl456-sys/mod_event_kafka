@@ -13,6 +13,9 @@
 		<param name="outbox-path" value="/var/lib/freeswitch/event_kafka_outbox.db"/>
 		<param name="mem-queue-max" value="10000"/>
 		<param name="outbox-max-rows" value="100000"/>
+		<!-- Pending rows older than this are marked dead (expired_ttl) and not produced.
+		     0 disables. Default 120000 (2 min). Outages within the TTL still drain after Kafka heals; no reload. -->
+		<param name="outbox-ttl-ms" value="120000"/>
 		<param name="message-timeout-ms" value="30000"/>
 		<param name="enable-idempotence" value="1"/>
 		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL; empty = auto -->

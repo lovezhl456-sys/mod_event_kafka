@@ -9,6 +9,7 @@ Lab sources are integrated at this repository root (`include/`, `src/`, `mod_eve
 - Candidate 0001 = **NOT_VERIFIED**
 
 ## Done
+- `outbox-ttl-ms` is implemented (default `120000`; `0` disables). Pending rows older than the TTL are marked `dead` / `last_error=expired_ttl` and are not produced. L-TTL lab case not yet run.
 - Design locked: SQLite outbox + bounded queue + worker/poll (candidate 0001 NOT accepted as final).
 - Outbox + bounded queue library built; ASan unit tests PASS (`test_outbox`).
 - FS module glue is wired: event callback deep-copies and enqueues only; worker inserts the SQLite outbox row, then produces; poll thread ACKs after delivery.

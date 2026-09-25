@@ -24,6 +24,8 @@ namespace mod_event_kafka {
 		int outbox_max_rows;
 		int message_timeout_ms;
 		int enable_idempotence;
+		/* 0 disables expiry; default applied in conf parse is 120000. */
+		int outbox_ttl_ms;
 	} globals;
 
 

@@ -200,7 +200,19 @@ void KafkaPipeline::worker_loop() {
       }
     }
 
-    auto due = outbox_->fetch_due(wall_now_ms(), 32);
+    // Expire stale pending rows before the due scan so they are not produced.
+    // Short outages within outbox_ttl_ms leave rows pending and follow the
+    // existing heal-and-drain path. ttl <= 0 keeps that path with no expiry.
+    const int64_t now_ms = wall_now_ms();
+    if (cfg_.outbox_ttl_ms > 0) {
+      std::string exp_err;
+      const int expired = outbox_->expire_ttl(now_ms, cfg_.outbox_ttl_ms, exp_err);
+      if (expired > 0) {
+        metrics_.outbox_expired.fetch_add(static_cast<uint64_t>(expired), std::memory_order_relaxed);
+      }
+    }
+
+    auto due = outbox_->fetch_due(now_ms, 32);
     for (const auto& rec : due) {
       std::string err;
       if (!outbox_->mark_in_flight(rec.event_id, err)) continue;

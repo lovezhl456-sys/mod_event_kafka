@@ -32,6 +32,8 @@ struct PipelineConfig {
   int worker_idle_ms{50};
   int poll_ms{100};
   int max_attempts_before_dead{50};
+  // Pending rows older than this are marked dead and not produced. 0 disables.
+  int64_t outbox_ttl_ms{120000};
 };
 
 struct PipelineMetrics {
@@ -44,6 +46,7 @@ struct PipelineMetrics {
   std::atomic<uint64_t> acked{0};
   std::atomic<uint64_t> producer_rebuilds{0};
   std::atomic<uint64_t> permanent_errors{0};
+  std::atomic<uint64_t> outbox_expired{0};
 };
 
 class KafkaPipeline {

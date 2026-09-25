@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <random>
 #include <string>
@@ -29,6 +30,89 @@ std::string make_event_id() {
                 (unsigned long long)(b & 0xffffffffffffULL));
   return std::string(buf);
 }
+
+namespace {
+
+OutboxRecord read_outbox_row(sqlite3_stmt* stmt) {
+  OutboxRecord r;
+  r.event_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+  r.topic = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+  r.msg_key = sqlite3_column_text(stmt, 2)
+                  ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2))
+                  : "";
+  const void* blob = sqlite3_column_blob(stmt, 3);
+  const int blen = sqlite3_column_bytes(stmt, 3);
+  r.payload.assign(static_cast<const char*>(blob), static_cast<const char*>(blob) + blen);
+  const char* state = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+  r.state = OutboxState::Pending;
+  if (state && std::strcmp(state, "in_flight") == 0) r.state = OutboxState::InFlight;
+  else if (state && std::strcmp(state, "dead") == 0) r.state = OutboxState::Dead;
+  r.attempts = sqlite3_column_int(stmt, 5);
+  r.next_attempt_at_ms = sqlite3_column_int64(stmt, 6);
+  r.last_error = sqlite3_column_text(stmt, 7)
+                     ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7))
+                     : "";
+  r.created_at_ms = sqlite3_column_int64(stmt, 8);
+  r.updated_at_ms = sqlite3_column_int64(stmt, 9);
+  r.call_uuid = sqlite3_column_text(stmt, 10)
+                    ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10))
+                    : "";
+  return r;
+}
+
+bool query_counts(sqlite3* db, const char* where_sql, int64_t& rows, int64_t& bytes) {
+  std::string sql = "SELECT COUNT(*), IFNULL(SUM(LENGTH(payload)),0) FROM outbox";
+  if (where_sql && where_sql[0]) {
+    sql.push_back(' ');
+    sql += where_sql;
+  }
+  sqlite3_stmt* cs = nullptr;
+  if (sqlite3_prepare_v2(db, sql.c_str(), -1, &cs, nullptr) != SQLITE_OK) return false;
+  const bool ok = sqlite3_step(cs) == SQLITE_ROW;
+  if (ok) {
+    rows = sqlite3_column_int64(cs, 0);
+    bytes = sqlite3_column_int64(cs, 1);
+  }
+  sqlite3_finalize(cs);
+  return ok;
+}
+
+// Expired dead-letter rows must not block a new insert. Pending, in-flight, and
+// other dead rows (permanent errors) stay. Returns false when the new payload
+// still does not fit among those rows.
+bool admit_insert(sqlite3* db, int64_t max_rows, int64_t max_bytes, int64_t extra_bytes,
+                  std::string& err) {
+  int64_t rows = 0;
+  int64_t bytes = 0;
+  if (!query_counts(db, nullptr, rows, bytes)) {
+    err = "outbox capacity check failed";
+    return false;
+  }
+  if (rows < max_rows && bytes + extra_bytes <= max_bytes) return true;
+
+  int64_t blocking_rows = 0;
+  int64_t blocking_bytes = 0;
+  if (!query_counts(db, "WHERE NOT (state='dead' AND last_error='expired_ttl')", blocking_rows,
+                    blocking_bytes)) {
+    err = "outbox capacity check failed";
+    return false;
+  }
+  if (blocking_rows >= max_rows || blocking_bytes + extra_bytes > max_bytes) {
+    err = "outbox capacity exceeded";
+    return false;
+  }
+
+  char* errmsg = nullptr;
+  if (sqlite3_exec(db, "DELETE FROM outbox WHERE state='dead' AND last_error='expired_ttl'", nullptr,
+                   nullptr, &errmsg) != SQLITE_OK) {
+    err = errmsg ? errmsg : "expired row reclaim failed";
+    sqlite3_free(errmsg);
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 struct Outbox::Impl {
   std::string path;
@@ -76,7 +160,8 @@ bool Outbox::open(std::string& err) {
       "  call_uuid TEXT"
       ");"
       "CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(state, next_attempt_at_ms);"
-      "CREATE INDEX IF NOT EXISTS idx_outbox_call ON outbox(call_uuid, created_at_ms);";
+      "CREATE INDEX IF NOT EXISTS idx_outbox_call ON outbox(call_uuid, created_at_ms);"
+      "CREATE INDEX IF NOT EXISTS idx_outbox_ttl ON outbox(state, created_at_ms);";
   if (sqlite3_exec(impl_->db, ddl, nullptr, nullptr, &errmsg) != SQLITE_OK) {
     err = errmsg ? errmsg : "ddl failed";
     sqlite3_free(errmsg);
@@ -102,19 +187,8 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err) {
     return false;
   }
 
-  int64_t rows = 0;
-  int64_t bytes = 0;
-  sqlite3_stmt* cs = nullptr;
-  sqlite3_prepare_v2(impl_->db,
-                     "SELECT COUNT(*), IFNULL(SUM(LENGTH(payload)),0) FROM outbox", -1, &cs, nullptr);
-  if (sqlite3_step(cs) == SQLITE_ROW) {
-    rows = sqlite3_column_int64(cs, 0);
-    bytes = sqlite3_column_int64(cs, 1);
-  }
-  sqlite3_finalize(cs);
-  if (rows >= impl_->max_rows ||
-      bytes + static_cast<int64_t>(rec.payload.size()) > impl_->max_bytes) {
-    err = "outbox capacity exceeded";
+  if (!admit_insert(impl_->db, impl_->max_rows, impl_->max_bytes,
+                    static_cast<int64_t>(rec.payload.size()), err)) {
     return false;
   }
 
@@ -159,27 +233,7 @@ std::vector<OutboxRecord> Outbox::fetch_due(int64_t now, int limit) {
   sqlite3_bind_int64(stmt, 1, now);
   sqlite3_bind_int(stmt, 2, limit);
   while (sqlite3_step(stmt) == SQLITE_ROW) {
-    OutboxRecord r;
-    r.event_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-    r.topic = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-    r.msg_key = sqlite3_column_text(stmt, 2)
-                    ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2))
-                    : "";
-    const void* blob = sqlite3_column_blob(stmt, 3);
-    const int blen = sqlite3_column_bytes(stmt, 3);
-    r.payload.assign(static_cast<const char*>(blob), static_cast<const char*>(blob) + blen);
-    r.state = OutboxState::Pending;
-    r.attempts = sqlite3_column_int(stmt, 5);
-    r.next_attempt_at_ms = sqlite3_column_int64(stmt, 6);
-    r.last_error = sqlite3_column_text(stmt, 7)
-                       ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7))
-                       : "";
-    r.created_at_ms = sqlite3_column_int64(stmt, 8);
-    r.updated_at_ms = sqlite3_column_int64(stmt, 9);
-    r.call_uuid = sqlite3_column_text(stmt, 10)
-                      ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10))
-                      : "";
-    out.push_back(std::move(r));
+    out.push_back(read_outbox_row(stmt));
   }
   sqlite3_finalize(stmt);
   return out;
@@ -288,6 +342,49 @@ bool Outbox::requeue_in_flight(std::string& err) {
     return false;
   }
   return true;
+}
+
+int Outbox::expire_ttl(int64_t now_ms, int64_t ttl_ms, std::string& err) {
+  if (ttl_ms <= 0) return 0;
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  if (!impl_->db) {
+    err = "db closed";
+    return -1;
+  }
+  sqlite3_stmt* stmt = nullptr;
+  const char* sql =
+      "UPDATE outbox SET state='dead', last_error='expired_ttl', updated_at_ms=? "
+      "WHERE state='pending' AND (? - created_at_ms) > ?";
+  if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    err = sqlite3_errmsg(impl_->db);
+    return -1;
+  }
+  sqlite3_bind_int64(stmt, 1, now_ms);
+  sqlite3_bind_int64(stmt, 2, now_ms);
+  sqlite3_bind_int64(stmt, 3, ttl_ms);
+  if (sqlite3_step(stmt) != SQLITE_DONE) {
+    err = sqlite3_errmsg(impl_->db);
+    sqlite3_finalize(stmt);
+    return -1;
+  }
+  const int changed = sqlite3_changes(impl_->db);
+  sqlite3_finalize(stmt);
+  return changed;
+}
+
+bool Outbox::get(const std::string& event_id, OutboxRecord& out) const {
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  if (!impl_->db) return false;
+  sqlite3_stmt* stmt = nullptr;
+  const char* sql =
+      "SELECT event_id,topic,msg_key,payload,state,attempts,next_attempt_at_ms,last_error,"
+      "created_at_ms,updated_at_ms,call_uuid FROM outbox WHERE event_id=?";
+  if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+  sqlite3_bind_text(stmt, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+  const bool found = sqlite3_step(stmt) == SQLITE_ROW;
+  if (found) out = read_outbox_row(stmt);
+  sqlite3_finalize(stmt);
+  return found;
 }
 
 OutboxStats Outbox::stats() const {
