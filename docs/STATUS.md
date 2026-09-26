@@ -6,10 +6,17 @@ Lab sources are integrated at this repository root (`include/`, `src/`, `mod_eve
 - FS Phase2 拨测 **L-02/L-07=PASS**
 - Evidence path: `reports/l02-l07-fs-20260925-133618/`
 - `verify_event_ids.py` VERIFY_OK 60/60, no module reload
+- FS + TTL lab **L-16a=PASS**, **L-16b=PASS**, **L-16c=PASS**
+- Evidence path: `reports/l16-abc-20260925-215439/`
+- Module had `outbox-ttl-ms=120000` (master `37e89154`)
+- Short cut 35s: full delivery (verify ok; 60 injected with 60 matched)
+- Cut 150s > TTL: expired rows `dead/expired_ttl`, `expired_still_in_topic=0`; consumed_matched=30 of 60 (non-expired delivered)
+- After heal: new calls VERIFY_OK 30/30
 - Candidate 0001 = **NOT_VERIFIED**
 
 ## Done
-- `outbox-ttl-ms` is implemented (default `120000`; `0` disables). Pending rows older than the TTL are marked `dead` / `last_error=expired_ttl` and are not produced. L-TTL lab case not yet run.
+- `outbox-ttl-ms` is implemented (default `120000`; `0` disables). Pending rows older than the TTL are marked `dead` / `last_error=expired_ttl` and are not produced.
+- FS + TTL lab **L-16a=PASS**, **L-16b=PASS**, **L-16c=PASS**. Evidence path: `reports/l16-abc-20260925-215439/`. Module had `outbox-ttl-ms=120000` (master `37e89154`). Short cut 35s: full delivery (verify ok; 60 injected with 60 matched). Cut 150s > TTL: expired rows `dead/expired_ttl`, `expired_still_in_topic=0`; consumed_matched=30 of 60 (non-expired delivered). After heal: new calls VERIFY_OK 30/30.
 - Design locked: SQLite outbox + bounded queue + worker/poll (candidate 0001 NOT accepted as final).
 - Outbox + bounded queue library built; ASan unit tests PASS (`test_outbox`).
 - FS module glue is wired: event callback deep-copies and enqueues only; worker inserts the SQLite outbox row, then produces; poll thread ACKs after delivery.
@@ -56,4 +63,15 @@ This section owns the FS Phase2 evidence.
 - Healed without reload; module_exists=true
 - Candidate 0001 = **NOT_VERIFIED** (negative reference only)
 - Caveat: park path may lack ANSWER; CREATE/HANGUP* only
+- Caveat: L-03–L-15 not fully run; not production-verified
+
+## L-16a/b/c (FS + TTL, 2026-09-25 night)
+- **L-16a=PASS**, **L-16b=PASS**, **L-16c=PASS**
+- Evidence path: `reports/l16-abc-20260925-215439/`
+- Module: lab-freeswitch with `outbox-ttl-ms=120000` (master `37e89154`)
+- **L-16a=PASS** (short cut 35s, verify_rc=0): full delivery; 60 injected with 60 matched
+- **L-16b=PASS** (cut 150s > TTL): expired rows `dead/expired_ttl`; expired_ttl dead=30 of the injected during/aged set; `expired_still_in_topic=0`; consumed_matched=30 of 60 (non-expired delivered)
+- **L-16c=PASS** (post-heal dialtest, verify_rc=0): new calls VERIFY_OK 30/30
+- Dial helper: `lab-mod-event-kafka/dialtest_fast.sh` (bgapi; avoids long NO_ANSWER hang)
+- Candidate 0001 = **NOT_VERIFIED** (negative reference only)
 - Caveat: L-03–L-15 not fully run; not production-verified
