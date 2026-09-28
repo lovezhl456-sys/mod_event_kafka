@@ -7,6 +7,21 @@ FreeSWITCH Kafka 插件
 
 丢失、重复与顺序的边界见 [docs/RELIABILITY.md](docs/RELIABILITY.md)。设计、测试、部署与实验室状态见 [docs/DESIGN.md](docs/DESIGN.md)、[docs/TEST-PLAN.md](docs/TEST-PLAN.md)、[docs/DEPLOY-ROLLBACK.md](docs/DEPLOY-ROLLBACK.md)、[docs/STATUS.md](docs/STATUS.md)。拨测 compose 与示例配置见 [lab/](lab/)。
 
+## 文档导航
+
+运维三篇只描述实验室栈和已归档证据，不表示生产环境已验证。
+
+| 文档 | 内容 |
+|------|------|
+| [docs/DESIGN.md](docs/DESIGN.md) | outbox、`outbox-ttl-ms` 与错误分类 |
+| [docs/RELIABILITY.md](docs/RELIABILITY.md) | 丢失、重复、顺序与过期边界 |
+| [docs/TEST-PLAN.md](docs/TEST-PLAN.md) | 单元与实验室用例（含 L-03…L-15） |
+| [docs/STATUS.md](docs/STATUS.md) | 已跑结果与证据路径 |
+| [docs/DEPLOY-ROLLBACK.md](docs/DEPLOY-ROLLBACK.md) | 模块安装与回滚 |
+| [docs/KAFKA-DEPLOY.md](docs/KAFKA-DEPLOY.md) | 实验室 Kafka / toxiproxy 部署（绝对路径与仓内 `lab/` 对照） |
+| [docs/FAULT-SCENARIOS.md](docs/FAULT-SCENARIOS.md) | FS-01…FS-10 与 L-xx 映射；FS-01、FS-09 已挂切流命令 |
+| [docs/DRILL-RUNBOOK.md](docs/DRILL-RUNBOOK.md) | 短断 35s、超 TTL 150s、恢复后新呼叫的逐步演练 |
+
 配置 `event_kafka.conf.xml`。既有键名不变。可选的增量参数：`outbox-path`、`mem-queue-max`、`outbox-max-rows`、`message-timeout-ms`、`enable-idempotence`、`security-protocol`、`ssl-ca-location`。实验室拨测示例为 `lab/event_kafka.fs.conf.xml`。
 
 ```xml
