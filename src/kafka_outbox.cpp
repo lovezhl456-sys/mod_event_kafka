@@ -77,9 +77,8 @@ bool query_counts(sqlite3* db, const char* where_sql, int64_t& rows, int64_t& by
   return ok;
 }
 
-// Expired dead-letter rows must not block a new insert. Pending, in-flight, and
-// other dead rows (permanent errors) stay. Returns false when the new payload
-// still does not fit among those rows.
+// 已过期的死信行不得阻塞新插入。pending、in-flight 以及其他 dead 行
+// （永久性错误）予以保留。若新负载在这些行之间仍放不下，则返回 false。
 bool admit_insert(sqlite3* db, int64_t max_rows, int64_t max_bytes, int64_t extra_bytes,
                   std::string& err) {
   int64_t rows = 0;
@@ -112,7 +111,7 @@ bool admit_insert(sqlite3* db, int64_t max_rows, int64_t max_bytes, int64_t extr
   return true;
 }
 
-}  // namespace
+}  // 匿名命名空间
 
 struct Outbox::Impl {
   std::string path;
@@ -422,4 +421,4 @@ int64_t Outbox::oldest_pending_age_ms(int64_t now) const {
   return age < 0 ? 0 : age;
 }
 
-}  // namespace event_kafka
+}  // 命名空间 event_kafka

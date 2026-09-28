@@ -1,4 +1,4 @@
-# Customise these as appropriate
+# 按需调整以下项
 MODNAME = mod_event_kafka.so
 MODOBJ = mod_event_kafka.o src/kafka_outbox.o src/kafka_pipeline.o
 MODCFLAGS = -Wall -Werror 

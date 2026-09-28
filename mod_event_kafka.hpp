@@ -16,7 +16,7 @@ namespace mod_event_kafka {
 		int buffer_size;
 		char *compression;
 		char *event_filter;
-		/* Additive resilience settings (defaults preserve prior behavior dimensions) */
+		/* 增量可靠性配置（默认值保持既有行为维度） */
 		char *outbox_path;
 		char *security_protocol;
 		char *ssl_ca_location;
@@ -24,13 +24,13 @@ namespace mod_event_kafka {
 		int outbox_max_rows;
 		int message_timeout_ms;
 		int enable_idempotence;
-		/* 0 disables expiry; default applied in conf parse is 120000. */
+		/* 0 表示关闭过期；配置解析中应用的默认值为 120000。 */
 		int outbox_ttl_ms;
 	} globals;
 
 
 	static struct {
-		/* Array to store the possible event subscriptions */
+		/* 用于存放可能的事件订阅的数组 */
 		int event_subscriptions;
 		switch_event_node_t *event_nodes[SWITCH_EVENT_ALL];
 		switch_event_types_t event_ids[SWITCH_EVENT_ALL];

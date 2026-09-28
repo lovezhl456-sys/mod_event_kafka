@@ -1,36 +1,36 @@
 
-# Created by https://www.gitignore.io
+# 由 https://www.gitignore.io 生成
 
 ### C++ ###
-# Prerequisites
+# 前置文件
 *.d
 
-# Compiled Object files
+# 已编译的目标文件
 *.slo
 *.lo
 *.o
 *.obj
 
-# Precompiled Headers
+# 预编译头
 *.gch
 *.pch
 
-# Compiled Dynamic libraries
+# 已编译的动态库
 *.so
 *.dylib
 *.dll
 
-# Fortran module files
+# Fortran 模块文件
 *.mod
 *.smod
 
-# Compiled Static libraries
+# 已编译的静态库
 *.lai
 *.la
 *.a
 *.lib
 
-# Executables
+# 可执行文件
 *.exe
 *.out
 *.app
@@ -38,7 +38,7 @@
 .DS_Store
 
 
-#intellij
+# intellij
 
 .idea
 *.iml
@@ -58,12 +58,12 @@ build
 cmake-build-debug/
 
 
-#VSCode
+# VSCode
 .vscode
 
 
-#dist
+# 发行物
 *.deb
 
-#vagrant
+# vagrant
 .vagrant

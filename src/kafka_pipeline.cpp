@@ -200,9 +200,9 @@ void KafkaPipeline::worker_loop() {
       }
     }
 
-    // Expire stale pending rows before the due scan so they are not produced.
-    // Short outages within outbox_ttl_ms leave rows pending and follow the
-    // existing heal-and-drain path. ttl <= 0 keeps that path with no expiry.
+    // 在到点扫描（fetch_due）之前先使陈旧的 pending 行过期，以免被投递。
+    // outbox_ttl_ms 以内的短时中断会使行保持 pending，并走既有的
+    // 自愈并排空路径。ttl <= 0 时保持该路径且不过期。
     const int64_t now_ms = wall_now_ms();
     if (cfg_.outbox_ttl_ms > 0) {
       std::string exp_err;
@@ -303,4 +303,4 @@ int64_t KafkaPipeline::backoff_ms(int attempts) {
   return base + (wall_now_ms() % 97);
 }
 
-}  // namespace event_kafka
+}  // 命名空间 event_kafka

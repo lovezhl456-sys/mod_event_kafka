@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Verify injected vs consumed x-fs-event-id sets for lab acceptance.
+"""核对实验室验收中注入的与已消费的 x-fs-event-id 集合。
 
-Usage:
+用法：
   scripts/verify_event_ids.py reports/<run-id>/
 
-Expected files in that directory (see docs/TEST-PLAN.md §3.3):
+该目录中的预期文件（见 docs/TEST-PLAN.md §3.3）：
   injected_ids.txt
   consumed_ids.txt
-  optional: rejected_ids.txt, outbox_snapshot.csv
+  可选：rejected_ids.txt、outbox_snapshot.csv
 
-Exit: 0 ok | 1 set mismatch | 2 order fail | 3 bad artifacts
+退出码：0 成功 | 1 集合不匹配 | 2 顺序失败 | 3 产物损坏
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def main() -> int:
                 except (KeyError, ValueError):
                     continue
                 by_call[cu].append((created, row["event_id"]))
-        # first occurrence order in consumed_dedup
+        # consumed_dedup 中的首次出现顺序
         first_pos = {}
         for i, eid in enumerate(consumed):
             if eid not in first_pos:
