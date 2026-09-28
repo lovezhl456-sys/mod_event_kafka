@@ -20,7 +20,8 @@ sg docker -c 'docker run -d --name lab-freeswitch --network host lab-freeswitch:
 
 ## 拨测
 ```bash
-/workspace/lab-mod-event-kafka/dialtest_originate.sh 2
+# 仓库根目录；共享机：/workspace/lab-mod-event-kafka/dialtest_originate.sh 2
+lab/dialtest_originate.sh 2
 # 实际使用的 originate：
 # originate {ignore_early_media=true,origination_caller_id_number=dialtest}loopback/park/default &park()
 ```

@@ -32,7 +32,7 @@ FS-01、FS-09 的「如何注入」已挂上实验室切流命令（`toxiproxy_c
 | 字段 | 内容 |
 |------|------|
 | **场景 ID / 名称** | FS-01 / 整集群断开（toxiproxy 全切） |
-| **如何注入** | 高层：toxiproxy 禁用全部前端 `kafka1/kafka2/kafka3`（切断时长建议 > `message-timeout-ms`，短切约 35s）；恢复时全部重新启用。**不** `reload mod_event_kafka`、不重启 FS。拨测在切断前与切断中各注入一批事件。真实切流（实验室机器）：`/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 35`（全禁 `kafka1`/`kafka2`/`kafka3`，约 35 秒后自动恢复）。切断期间另开终端拨测。超 TTL 的 150 秒全切属于 FS-09，不要拿来当本场景的通过条件。步骤见 `docs/DRILL-RUNBOOK.md`。 |
+| **如何注入** | 高层：toxiproxy 禁用全部前端 `kafka1/kafka2/kafka3`（切断时长建议 > `message-timeout-ms`，短切约 35s）；恢复时全部重新启用。**不** `reload mod_event_kafka`、不重启 FS。拨测在切断前与切断中各注入一批事件。真实切流：在仓库根目录执行 `lab/toxiproxy_cut_restore.sh 35`（全禁 `kafka1`/`kafka2`/`kafka3`，约 35 秒后自动恢复）。共享机仍可用 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 35`。切断期间另开终端拨测。超 TTL 的 150 秒全切属于 FS-09，不要拿来当本场景的通过条件。步骤见 `docs/DRILL-RUNBOOK.md`。 |
 | **预期模块行为** | FS 回调仅深拷贝入队，不在网络/磁盘上阻塞；worker 写入 SQLite outbox 后 produce；poll 线程持续 `rd_kafka_poll`（**不**跨 `rd_kafka_poll` 持 `rk_mu_`）；未 ACK 行留 pending/重试；恢复后 outbox 排空；稳定 `event_id` 经头 `x-fs-event-id` 重放；同通话按 `call_uuid`+`created_at_ms` FIFO。 |
 | **验收门** | `scripts/verify_event_ids.py`：`set(injected)-set(consumed_dedup)-rejected==∅`（允许写明的 pre-COMMIT 丢失）；排空后 `pending+in_flight==0`；**reload 前**采集即通过（自愈门）；报告 `dupes_in_consume`。 |
 | **L-xx 覆盖** | **已 empirically：** **L-02=PASS**、**L-07=PASS**（稳定架 + FS Phase2）；短切亦覆盖 **L-16a=PASS**。 |
@@ -136,7 +136,7 @@ FS-01、FS-09 的「如何注入」已挂上实验室切流命令（`toxiproxy_c
 | 字段 | 内容 |
 |------|------|
 | **场景 ID / 名称** | FS-09 / pending 超过 `outbox-ttl-ms` |
-| **如何注入** | 高层：配置 `outbox-ttl-ms=120000`（或实验值）；toxiproxy **全切时长 > TTL**（如 150s）；切断前与切断中注入；恢复后再拨新呼叫。对照：短切 **≤ TTL** 应完整送达。真实切流（实验室机器）：超 TTL 用 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 150`（全禁三入口，150 秒后恢复，大于默认 `120000`）；短切对照用同一脚本的 `35`（即 FS-01）。切断期间另开终端拨测，恢复后再拨新呼叫。步骤见 `docs/DRILL-RUNBOOK.md`。 |
+| **如何注入** | 高层：配置 `outbox-ttl-ms=120000`（或实验值）；toxiproxy **全切时长 > TTL**（如 150s）；切断前与切断中注入；恢复后再拨新呼叫。对照：短切 **≤ TTL** 应完整送达。真实切流：超 TTL 在仓库根目录用 `lab/toxiproxy_cut_restore.sh 150`（全禁三入口，150 秒后恢复，大于默认 `120000`）；短切对照用同一脚本的 `35`（即 FS-01）。共享机绝对路径为 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh`。切断期间另开终端拨测，恢复后再拨新呼叫。步骤见 `docs/DRILL-RUNBOOK.md`。 |
 | **预期模块行为** | `now_ms - created_at_ms > outbox-ttl-ms` 的 **pending** → `state=dead`、`last_error=expired_ttl`、计 `outbox_expired`，**不投递**；in-flight 不就地过期；恢复后 dead 不进 `fetch_due`，新事件优先；短切不触发过期，走自愈排空。 |
 | **验收门** | 短切：`verify_event_ids.py` 全量 OK。长切：过期 ID **不得**出现在 topic（`expired_still_in_topic=0`）；未过期子集应匹配；outbox 可见 `dead/expired_ttl`；自愈后新注入集合 VERIFY_OK。 |
 | **L-xx 覆盖** | **已 empirically：** **L-16a=PASS**（短切 35s，60/60）、**L-16b=PASS**（150s>TTL，matched=30/60，expired_ttl，expired_still_in_topic=0）、**L-16c=PASS**（自愈后 30/30）。注：L-16a/b/c 写在 STATUS 证据中，**尚未作为 TEST-PLAN §3.2 矩阵正式行**。 |
