@@ -48,9 +48,9 @@ class Outbox {
                  std::string& err);
   bool requeue_in_flight(std::string& err);
 
-  // Pending rows with (now_ms - created_at_ms) > ttl_ms become dead / expired_ttl.
-  // ttl_ms <= 0 disables expiry and returns 0. Returns the number of rows
-  // updated, or -1 on error. In-flight rows are left for ACK or retry.
+  // (now_ms - created_at_ms) > ttl_ms 的 pending 行变为 dead / expired_ttl。
+  // ttl_ms <= 0 时关闭过期并返回 0。返回更新的行数，出错返回 -1。
+  // in-flight 行留给 ACK 或重试。
   int expire_ttl(int64_t now_ms, int64_t ttl_ms, std::string& err);
   bool get(const std::string& event_id, OutboxRecord& out) const;
 
@@ -65,4 +65,4 @@ class Outbox {
 std::string make_event_id();
 int64_t wall_now_ms();
 
-}  // namespace event_kafka
+}  // 命名空间 event_kafka

@@ -28,7 +28,7 @@ static void rm_db(const std::string& db) {
   fs::remove(db + "-shm");
 }
 
-// U-OWN-01: queue holds independent deep copies of payload/key
+// U-OWN-01：队列持有 payload/key 的独立深拷贝
 static void test_own_queue_deepcopy() {
   event_kafka::BoundedQueue q(4);
   std::string payload = "payload-original";
@@ -39,7 +39,7 @@ static void test_own_queue_deepcopy() {
   ev.msg_key = key;
   ev.payload = payload;
   ev.call_uuid = "c1";
-  CHECK(q.try_push(ev));  // copy into queue via by-value then move into deque
+  CHECK(q.try_push(ev));  // 按值拷贝进队列，再移动进 deque
   payload.assign(payload.size(), 'X');
   key.assign(key.size(), 'Y');
   bool stopping = false;
@@ -49,7 +49,7 @@ static void test_own_queue_deepcopy() {
   CHECK(got->msg_key == "key-original");
 }
 
-// U-OWN-02: outbox stores independent payload; mutating caller buffer after insert is safe
+// U-OWN-02：outbox 保存独立的 payload；插入之后改调用方缓冲区是安全的
 static void test_own_outbox_deepcopy() {
   const std::string db = "/tmp/event_kafka_own_outbox.db";
   rm_db(db);
@@ -77,7 +77,7 @@ static void test_own_outbox_deepcopy() {
   box.close();
 }
 
-// U-DSK-03: byte capacity rejects oversized insert
+// U-DSK-03：字节容量拒绝过大的插入
 static void test_byte_cap() {
   const std::string db = "/tmp/event_kafka_byte_cap.db";
   rm_db(db);
@@ -94,18 +94,18 @@ static void test_byte_cap() {
 
   event_kafka::OutboxRecord big = small;
   big.event_id = event_kafka::make_event_id();
-  big.payload = std::string(64, 'b');  // 32+64 > 64
+  big.payload = std::string(64, 'b');  // 32+64 > 64，超出上限
   CHECK(!box.insert_pending(big, err));
   CHECK(err.find("capacity") != std::string::npos);
   CHECK(box.stats().pending == 1);
   box.close();
 }
 
-// U-Q-02: concurrent enqueue around capacity
+// U-Q-02：在容量附近并发入队
 static void test_concurrent_enqueue() {
   constexpr size_t cap = 64;
   constexpr int threads = 8;
-  constexpr int per_thread = 40;  // 320 attempts > 64
+  constexpr int per_thread = 40;  // 320 次尝试 > 64
   event_kafka::BoundedQueue q(cap);
   std::atomic<int> pushed{0};
   std::vector<std::thread> th;
@@ -126,9 +126,9 @@ static void test_concurrent_enqueue() {
   CHECK(q.rejected() == static_cast<uint64_t>(threads * per_thread - cap));
 }
 
-// U-UNL-01/02: notify_stop unblocks pop; double close safe; pipeline stop drains + rejects
+// U-UNL-01/02：notify_stop 解除 pop 阻塞；重复 close 安全；流水线 stop 会排空并拒绝
 static void test_safe_unload() {
-  // Queue stop
+  // 队列停止
   {
     event_kafka::BoundedQueue q(2);
     bool stopping = false;
@@ -143,7 +143,7 @@ static void test_safe_unload() {
     CHECK(!got.has_value());
   }
 
-  // Outbox double close
+  // Outbox 重复 close
   {
     const std::string db = "/tmp/event_kafka_unload_outbox.db";
     rm_db(db);
@@ -151,7 +151,7 @@ static void test_safe_unload() {
     std::string err;
     CHECK(box.open(err));
     box.close();
-    box.close();  // must not crash under ASan
+    box.close();  // ASan 下不得崩溃
     event_kafka::OutboxRecord r;
     r.event_id = event_kafka::make_event_id();
     r.topic = "t";
@@ -160,12 +160,12 @@ static void test_safe_unload() {
     CHECK(!box.insert_pending(r, err));
   }
 
-  // Pipeline: enqueue while up, stop joins cleanly, outbox retains unacked, post-stop enqueue fails
+  // 流水线：运行中入队，stop 干净 join，outbox 保留未 ACK 行，停止后入队失败
   {
     const std::string db = "/tmp/event_kafka_unload_pipe.db";
     rm_db(db);
     event_kafka::PipelineConfig cfg;
-    cfg.brokers = "127.0.0.1:1";  // unreachable; producer still constructs
+    cfg.brokers = "127.0.0.1:1";  // 不可达；生产者仍会构造
     cfg.topic = "fs_events";
     cfg.outbox_path = db;
     cfg.mem_queue_max = 100;
@@ -174,14 +174,14 @@ static void test_safe_unload() {
     cfg.worker_idle_ms = 20;
     cfg.poll_ms = 20;
     cfg.message_timeout_ms = 3000;
-    cfg.enable_idempotence = false;  // friendlier with dead bootstrap
+    cfg.enable_idempotence = false;  // 对失效的 bootstrap 更友好
 
     event_kafka::KafkaPipeline pipe(cfg);
     std::string err;
     const bool started = pipe.start(err);
     if (!started) {
       std::cerr << "NOTE pipeline start skipped unload drain assert: " << err << "\n";
-      // Still exercise destructor/stop on failed start
+      // 启动失败时仍要走一遍析构 / stop
       pipe.stop();
       pipe.stop();
       return;
@@ -193,10 +193,10 @@ static void test_safe_unload() {
       CHECK(pipe.enqueue(std::string("{\"n\":") + std::to_string(i) + "}", "k", "call-u", id, err));
       ids.push_back(id);
     }
-    // Allow worker to spill mem -> outbox even if produce fails
+    // 即使 produce 失败，也让 worker 把内存队列写入 outbox
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     pipe.stop();
-    pipe.stop();  // idempotent
+    pipe.stop();  // 幂等
 
     std::string id2;
     CHECK(!pipe.enqueue("after-stop", "k", "c", id2, err));
@@ -204,7 +204,7 @@ static void test_safe_unload() {
     event_kafka::Outbox box(db, 1000, 1024 * 1024);
     CHECK(box.open(err));
     auto st = box.stats();
-    // At least some rows should have been persisted before/during stop
+    // 停止之前或期间，至少应有一些行已持久化
     CHECK(st.pending + st.in_flight + st.dead >= 1);
     box.close();
   }
@@ -309,8 +309,8 @@ static event_kafka::OutboxRecord make_row(const std::string& id, const std::stri
   return r;
 }
 
-// U-TTL: enabled TTL dead-letters old rows and does not leave them due;
-// TTL 0 still returns old rows for produce. Age == TTL is kept (> not >=).
+// U-TTL：启用 TTL 时把旧行打成死信，且不再把它们留在可投递（due）集合里；
+// TTL 为 0 时仍返回旧行供 produce。年龄 == TTL 时保留（> 而不是 >=）。
 static void test_outbox_ttl() {
   const int64_t ttl = 120000;
   const int64_t now = 1700000000000LL;
@@ -344,7 +344,7 @@ static void test_outbox_ttl() {
   CHECK(box.stats().dead == 1);
   CHECK(box.stats().pending == 2);
 
-  // In-flight rows stay on the ACK path. Expiry does not delete or dead-letter them.
+  // in-flight 行留在 ACK 路径上。过期不会删除它们，也不会把它们打成死信。
   auto inflight = make_row("ttl-inflight", "{\"n\":1}", now - ttl - 50);
   CHECK(box.insert_pending(inflight, err));
   CHECK(box.mark_in_flight("ttl-inflight", err));
@@ -354,7 +354,7 @@ static void test_outbox_ttl() {
   CHECK(box.mark_acked("ttl-inflight", err));
   CHECK(!box.get("ttl-inflight", got));
 
-  // Retry back to pending after the TTL is expired and not due for produce.
+  // 超过 TTL 之后重试退回 pending 的行会被过期，且不再进入可投递（due）集合。
   auto retry = make_row("ttl-retry", "{\"n\":2}", now - ttl - 10);
   CHECK(box.insert_pending(retry, err));
   CHECK(box.mark_in_flight("ttl-retry", err));
@@ -367,7 +367,7 @@ static void test_outbox_ttl() {
   for (const auto& row : due) CHECK(row.event_id != "ttl-retry");
   box.close();
 
-  // TTL 0: ancient rows stay pending and are still due (produce path unchanged).
+  // TTL 为 0：极旧的行保持 pending，并且仍然可投递（due，produce 路径不变）。
   const std::string db0 = "/tmp/event_kafka_ttl0.db";
   rm_db(db0);
   event_kafka::Outbox box0(db0, 100, 1024 * 1024);
@@ -384,7 +384,7 @@ static void test_outbox_ttl() {
   box0.close();
 }
 
-// Expired dead letters yield capacity to new events. Permanent dead and live rows do not.
+// 已过期的死信把容量让给新事件。永久性 dead 与仍存活的行不会让出。
 static void test_expired_does_not_block_new_work() {
   const std::string db = "/tmp/event_kafka_ttl_cap.db";
   rm_db(db);
@@ -413,7 +413,7 @@ static void test_expired_does_not_block_new_work() {
   CHECK(box.get("fresh", got));
   CHECK(got.state == event_kafka::OutboxState::Pending);
 
-  // Live rows still reject when they alone fill the outbox.
+  // 仍存活的行单独占满 outbox 时，仍然拒绝。
   auto extra = make_row("extra", "x", now);
   CHECK(!box.insert_pending(extra, err));
   CHECK(err.find("capacity") != std::string::npos);
@@ -461,7 +461,7 @@ static bool spin_until(const std::function<bool()>& pred, int ms) {
   return pred();
 }
 
-// Worker: TTL enabled does not produce an old row; TTL 0 does.
+// Worker：启用 TTL 时不投递旧行；TTL 为 0 时会投递。
 static void test_pipeline_ttl_produce() {
   const int64_t ttl = 120000;
   const int64_t now = event_kafka::wall_now_ms();

@@ -1,4 +1,4 @@
-// See https://aka.ms/vscode-remote/devcontainer.json for format details.
+// 格式说明见 https://aka.ms/vscode-remote/devcontainer.json。
 {
 	"name": "C++",
 	"dockerFile": "Dockerfile",

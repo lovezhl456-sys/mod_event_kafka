@@ -1,13 +1,13 @@
 # mod_event_kafka
-Freeswitch Kafka Plugin 
+FreeSWITCH Kafka 插件
 
 [![Build Status](https://github.com/voiceip/mod_event_kafka/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/voiceip/mod_event_kafka/actions/workflows/main.yml)
 
-Install this plugin to publish FreeSWITCH events to Kafka. The event callback only deep-copies the event onto a bounded memory queue. A worker thread inserts each event into a durable SQLite outbox and then produces it. After Kafka restarts or is briefly unreachable, committed rows are resent automatically — no FreeSWITCH restart and no `reload mod_event_kafka`.
+安装此插件可将 FreeSWITCH 事件发布到 Kafka。事件回调只把事件深拷贝到一个有界内存队列。工作线程将每条事件写入持久化的 SQLite outbox，然后再投递。Kafka 重启或短暂不可达之后，已提交的行会自动重发——无需重启 FreeSWITCH，也无需 `reload mod_event_kafka`。
 
-Loss, duplicate, and ordering boundaries are in [docs/RELIABILITY.md](docs/RELIABILITY.md). Design, tests, deploy, and lab status: [docs/DESIGN.md](docs/DESIGN.md), [docs/TEST-PLAN.md](docs/TEST-PLAN.md), [docs/DEPLOY-ROLLBACK.md](docs/DEPLOY-ROLLBACK.md), [docs/STATUS.md](docs/STATUS.md). Dialtest compose and sample conf: [lab/](lab/).
+丢失、重复与顺序的边界见 [docs/RELIABILITY.md](docs/RELIABILITY.md)。设计、测试、部署与实验室状态见 [docs/DESIGN.md](docs/DESIGN.md)、[docs/TEST-PLAN.md](docs/TEST-PLAN.md)、[docs/DEPLOY-ROLLBACK.md](docs/DEPLOY-ROLLBACK.md)、[docs/STATUS.md](docs/STATUS.md)。拨测 compose 与示例配置见 [lab/](lab/)。
 
-Configure `event_kafka.conf.xml`. Existing keys are unchanged. Optional additive knobs: `outbox-path`, `mem-queue-max`, `outbox-max-rows`, `message-timeout-ms`, `enable-idempotence`, `security-protocol`, `ssl-ca-location`. The lab dialtest sample is `lab/event_kafka.fs.conf.xml`. 
+配置 `event_kafka.conf.xml`。既有键名不变。可选的增量参数：`outbox-path`、`mem-queue-max`、`outbox-max-rows`、`message-timeout-ms`、`enable-idempotence`、`security-protocol`、`ssl-ca-location`。实验室拨测示例为 `lab/event_kafka.fs.conf.xml`。
 
 ```xml
 <configuration name="event_kafka.conf" description="Kafka Event Configuration">
@@ -22,7 +22,7 @@ Configure `event_kafka.conf.xml`. Existing keys are unchanged. Optional additive
 	</settings>
  </configuration>
 ```
-and enable autoloading of the module by adding the following entry in `modules.conf.xml`
+并在 `modules.conf.xml` 中加入以下条目，以启用该模块的自动加载
 
 ```xml
  <load module="mod_event_kafka"/>
@@ -30,37 +30,36 @@ and enable autoloading of the module by adding the following entry in `modules.c
 
 
 
-# Building
+# 构建
 
-## IDE Based Build
+## 基于 IDE 的构建
 
-We use vscode + docker, to enable easy building on any platform with the use of [remote-container](https://code.visualstudio.com/docs/remote/containers#_getting-started) feature of `Visual Studio Code`. If you are new to this, follow the [getting started guide](https://code.visualstudio.com/docs/remote/containers#_getting-started) 
+我们使用 vscode + docker，借助 `Visual Studio Code` 的 [remote-container](https://code.visualstudio.com/docs/remote/containers#_getting-started) 功能，在任意平台上简化构建。若初次接触，请遵循[入门指南](https://code.visualstudio.com/docs/remote/containers#_getting-started)。
 
-Open the project in `Visual Studio Code` and just Run Task `Release`.
+在 `Visual Studio Code` 中打开项目，直接运行任务 `Release`。
 
 
-## Manually Building
+## 手动构建
 
-### Install Dependencies
+### 安装依赖
 ```bash
 sudo apt-get install libfreeswitch-dev
 sudo apt-get install build-essential pkg-config 
 sudo apt-get install librdkafka-dev libsqlite3-dev libz-dev libssl-dev
 ```
 
-### Build
+### 构建
 
 ```
 make
 make install
 ```
 
-`librdkafka` must provide `rd_kafka_producev` and message headers (1.x or newer; Debian 9's 0.9.3 is too old).
+`librdkafka` 必须提供 `rd_kafka_producev` 与消息头（1.x 或更新版本；Debian 9 自带的 0.9.3 过旧）。
 
-Unit tests (no FreeSWITCH headers; ASan/UBSan on `test_outbox`):
+单元测试（不依赖 FreeSWITCH 头文件；`test_outbox` 启用 ASan/UBSan）：
 
 ```
 cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure
 ```
-
 

@@ -28,7 +28,7 @@
  * 
  * Kinshuk Bairagi <me@kinshuk.in>
  *
- * mod_event_kafka.c -- Sends FreeSWITCH events to an Kafka broker
+ * mod_event_kafka.c -- 将 FreeSWITCH 事件发送到 Kafka broker
  *
  */
 
@@ -124,7 +124,7 @@ namespace mod_event_kafka {
             cfg.outbox_max_rows = globals.outbox_max_rows > 0 ? globals.outbox_max_rows : 100000;
             cfg.message_timeout_ms = globals.message_timeout_ms > 0 ? globals.message_timeout_ms : 30000;
             cfg.enable_idempotence = globals.enable_idempotence != 0;
-            // 0 disables expiry. Negative is not a configured value; use the default.
+            // 0 表示关闭过期。负值不是已配置取值；使用默认值。
             cfg.outbox_ttl_ms = globals.outbox_ttl_ms < 0 ? 120000 : globals.outbox_ttl_ms;
 
             pipeline_.reset(new event_kafka::KafkaPipeline(cfg));
@@ -153,7 +153,7 @@ namespace mod_event_kafka {
                 return;
             }
 
-            // Deep-copy into pipeline (payload string ctor copies); free FS buffer after enqueue attempt.
+            // 深拷贝进入流水线（payload 的 string 构造函数会复制）；入队尝试之后释放 FS 缓冲区。
             std::string payload(event_json);
             std::string key = uuid ? std::string(uuid) : std::string();
             std::string call_uuid = key;
@@ -202,12 +202,12 @@ namespace mod_event_kafka {
                 if (switch_name_event(event_filter_name[i], &(profile.event_ids[i])) != SWITCH_STATUS_SUCCESS && !switch_strstr(event_filter_name[i],switch_event_custom) ) {
                     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "The switch event %s was not recognised.\n", event_filter_name[i]);
                 } else {
-                    // switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "Found subscription for %s event.\n", argv[arg]);
+                    // switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "已找到 %s 事件的订阅。\n", argv[arg]);
                 }
             }
 
             if (profile.event_subscriptions > 0 ) {
-                /* Subscribe events */
+                /* 订阅事件 */
                 for (int i = 0; i < profile.event_subscriptions; i++) {
                     if ( switch_strstr(event_filter_name[i], switch_event_custom)) {
                         if (switch_event_bind_removable(modname, SWITCH_EVENT_CUSTOM, event_filter_name[i] + strlen("SWITCH_EVENT_CUSTOM::"),
@@ -226,8 +226,8 @@ namespace mod_event_kafka {
                 }
 
             } else {
-                // Subscribe to all switch events of any subclass
-                // Store a pointer to ourself in the user data
+                // 订阅全部交换机事件（任意子类）
+                // 在用户数据中保存指向自身的指针
                 if (switch_event_bind_removable(modname, SWITCH_EVENT_ALL, SWITCH_EVENT_SUBCLASS_ANY, event_handler,
                                                 static_cast<void*>(&_publisher), &_node)
                     != SWITCH_STATUS_SUCCESS) {
@@ -238,7 +238,7 @@ namespace mod_event_kafka {
             }
 
 
-            // Create our module interface registration
+            // 创建模块接口注册
             *module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Module loaded completed\n");
@@ -246,13 +246,13 @@ namespace mod_event_kafka {
         };
 
         void Shutdown() {
-            // Send term message
+            // 发送终止消息
             _publisher.Shutdown();
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Shutdown requested, flushing publisher\n");
         }
 
         ~KafkaModule() {
-            // Unsubscribe from the switch events
+            // 取消订阅交换机事件
             if (profile.event_subscriptions > 0 ) {
                 for (int i = 0; i < profile.event_subscriptions; i++) {
                     switch_event_unbind(&(profile.event_nodes[i]));
@@ -265,7 +265,7 @@ namespace mod_event_kafka {
 
     private:
 
-        // Dispatches events to the publisher
+        // 将事件分发给发布器
         static void event_handler(switch_event_t *event) {
             try {
                 KafkaEventPublisher *publisher = static_cast<KafkaEventPublisher*>(event->bind_user_data);
@@ -273,7 +273,7 @@ namespace mod_event_kafka {
             } catch (std::exception const &ex) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Error publishing event to Kafka: %s\n",
                                   ex.what());
-            } catch (...) { // Exceptions must not propogate to C caller
+            } catch (...) { // 异常不得传播到 C 调用方
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Unknown error publishing event to Kafka\n");
             }
         }
@@ -285,19 +285,19 @@ namespace mod_event_kafka {
 
 
     //*****************************//
-    //           GLOBALS           //
+    //           全局变量           //
     //*****************************//
     std::unique_ptr<KafkaModule> module;
 
 
     //*****************************//
-    //  Module interface funtions  //
+    //       模块接口函数          //
     //*****************************//
     SWITCH_MODULE_LOAD_FUNCTION(mod_event_kafka_load) {
             try {
                 module = std::make_unique<KafkaModule>(module_interface, pool);
                 return SWITCH_STATUS_SUCCESS;
-            } catch(...) { // Exceptions must not propogate to C caller
+            } catch(...) { // 异常不得传播到 C 调用方
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error loading Kafka Event module\n");
                 return SWITCH_STATUS_GENERR;
             }
@@ -307,14 +307,14 @@ namespace mod_event_kafka {
 
     SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_event_kafka_shutdown) {
             try {
-                // Tell the module to shutdown
+                // 通知模块关闭
                 module->Shutdown();
-                // Free the module object
+                // 释放模块对象
                 module.reset();
             } catch(std::exception const &ex) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error shutting down Kafka Event module: %s\n",
                                   ex.what());
-            } catch(...) { // Exceptions must not propogate to C caller
+            } catch(...) { // 异常不得传播到 C 调用方
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unknown error shutting down Kafka Event module\n");
             }
             return SWITCH_STATUS_SUCCESS;

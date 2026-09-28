@@ -65,4 +65,4 @@ class BoundedQueue {
   uint64_t rejected_{0};
 };
 
-}  // namespace event_kafka
+}  // 命名空间 event_kafka

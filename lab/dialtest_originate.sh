@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Phase2 lab dialtest — generate CHANNEL_CREATE / ANSWER / HANGUP* via loopback.
-# Requires: docker container lab-freeswitch (host network), toxiproxy Kafka up.
+# Phase2 实验室拨测 — 经 loopback 产生 CHANNEL_CREATE / ANSWER / HANGUP*。
+# 需要：docker 容器 lab-freeswitch（宿主机网络），以及 toxiproxy 上的 Kafka 已启动。
 #
-# Example:
+# 示例：
 #   /workspace/lab-mod-event-kafka/dialtest_originate.sh 2
 #
-# Exact fs_cli command used:
+# 实际使用的 fs_cli 命令：
 #   originate {ignore_early_media=true,origination_caller_id_number=dialtest}loopback/park/default &park()
 set -euo pipefail
 
