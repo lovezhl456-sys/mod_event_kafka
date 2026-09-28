@@ -19,8 +19,8 @@ FreeSWITCH Kafka 插件
 | [docs/STATUS.md](docs/STATUS.md) | 已跑结果与证据路径 |
 | [docs/DEPLOY-ROLLBACK.md](docs/DEPLOY-ROLLBACK.md) | 模块安装与回滚 |
 | [docs/KAFKA-DEPLOY.md](docs/KAFKA-DEPLOY.md) | 实验室 Kafka / toxiproxy 部署，以及和生产参照的差异 |
-| [docs/FAULT-SCENARIOS.md](docs/FAULT-SCENARIOS.md) | 故障现象、预期行为、L-xx 覆盖与证据 |
-| [docs/DRILL-RUNBOOK.md](docs/DRILL-RUNBOOK.md) | 短断、超 TTL 长断与恢复后新呼叫的演练步骤 |
+| [docs/FAULT-SCENARIOS.md](docs/FAULT-SCENARIOS.md) | FS-01…FS-10 与 L-xx 映射；已 empirically 的是 FS-01、FS-09 |
+| [docs/DRILL-RUNBOOK.md](docs/DRILL-RUNBOOK.md) | FS-01 / FS-09 的短断、超 TTL 长断与恢复后新呼叫 |
 
 配置 `event_kafka.conf.xml`。既有键名不变。可选的增量参数：`outbox-path`、`mem-queue-max`、`outbox-max-rows`、`message-timeout-ms`、`enable-idempotence`、`security-protocol`、`ssl-ca-location`。实验室拨测示例为 `lab/event_kafka.fs.conf.xml`。
 

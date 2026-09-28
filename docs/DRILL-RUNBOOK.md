@@ -6,11 +6,11 @@
 
 已归档结果（2026-09-25，数字属于那几次运行，新跑一轮会随拨号次数变化）：
 
-| 步骤 | 用例 | 归档结果 | 证据目录 |
+| 步骤 | 场景 | 归档结果 | 证据目录 |
 |------|------|----------|----------|
-| 短断 35s | L-02/L-07、L-16a | FS：VERIFY_OK 60/60。L-16a：注入 60、匹配 60，`verify_rc=0` | `reports/l02-l07-fs-20260925-133618/`、`reports/l16-abc-20260925-215439/` |
-| 长断 150s | L-16b | `dead`/`expired_ttl`，expired_ttl dead=30，`expired_still_in_topic=0`，consumed_matched=30/60 | `reports/l16-abc-20260925-215439/` |
-| 恢复后新呼叫 | L-16c | VERIFY_OK 30/30，`verify_rc=0` | 同上 |
+| 短断 35s | FS-01；L-02/L-07、L-16a | FS：VERIFY_OK 60/60。L-16a：注入 60、匹配 60，`verify_rc=0` | `reports/l02-l07-fs-20260925-133618/`；`reports/l16-abc-20260925-215439/`（子目录 `l16a/`）；稳定架 `reports/l02-l07-run1790313218/` |
+| 长断 150s | FS-09；L-16b | `dead`/`expired_ttl`，expired_ttl dead=30，`expired_still_in_topic=0`，consumed_matched=30/60 | `reports/l16-abc-20260925-215439/`（子目录 `l16b/`） |
+| 恢复后新呼叫 | FS-09；L-16c | VERIFY_OK 30/30，`verify_rc=0` | `reports/l16-abc-20260925-215439/`（子目录 `l16c/`） |
 
 这些 `reports/` 路径记录在 [STATUS.md](STATUS.md)。它们是归档目录。新的演练另外写 `reports/<本次运行>/`，不要把旧目录当成刚才生成的文件。
 
@@ -144,7 +144,7 @@ RESTORE 之后等 outbox 排空（以分钟计，短于 TTL 的行应被投递�
 scripts/verify_event_ids.py reports/<本次运行>/
 ```
 
-短断的通过标准：退出码 0，打印 `VERIFY_OK`。注入集合与消费去重集合一致（缺失只允许发生在从未 `COMMIT` 的窗口，并要单独写明）。归档对照是 FS `reports/l02-l07-fs-20260925-133618/` 的 60/60，以及 L-16a 在 `reports/l16-abc-20260925-215439/` 中的 60/60。
+短断的通过标准（FS-01）：退出码 0，打印 `VERIFY_OK`。注入集合与消费去重集合一致（缺失只允许发生在从未 `COMMIT` 的窗口，并要单独写明）。归档对照是 FS `reports/l02-l07-fs-20260925-133618/` 的 60/60，以及 L-16a：`reports/l16-abc-20260925-215439/`（子目录 `l16a/`）的 60/60。核对时把实际含有 `injected_ids.txt` 与 `consumed_ids.txt` 的那一层目录传给脚本。
 
 若只复看归档、不新打呼叫：
 
@@ -185,7 +185,7 @@ sg docker -c "docker exec lab-freeswitch sqlite3 \
   \"SELECT state, last_error, COUNT(*) FROM outbox GROUP BY state, last_error;\""
 ```
 
-没有 `sqlite3` 时，以本次 `reports/` 里的 outbox 快照和消费清单为准。归档结论以 `reports/l16-abc-20260925-215439/` 为准。
+没有 `sqlite3` 时，以本次 `reports/` 里的 outbox 快照和消费清单为准。归档结论以 STATUS 的 `reports/l16-abc-20260925-215439/` 为准（L-16b 子目录 `l16b/`）。长断对应场景 FS-09，不是「60 条全部在主题上」。
 
 ## 6. 恢复后新呼叫
 
@@ -202,7 +202,7 @@ curl -s http://127.0.0.1:8474/proxies | python3 -m json.tool
 scripts/verify_event_ids.py reports/<本次运行-恢复后>/
 ```
 
-通过标准：退出码 0，`VERIFY_OK`。新事件被投递。过期死信留在 `dead`/`expired_ttl`（或按 DESIGN，仅在会堵住新插入时被回收），不要求它们出现在主题上。归档 L-16c：VERIFY_OK 30/30，`verify_rc=0`，证据仍是 `reports/l16-abc-20260925-215439/`。
+通过标准（仍是 FS-09 的恢复段，L-16c）：退出码 0，`VERIFY_OK`。新事件被投递。过期死信留在 `dead`/`expired_ttl`（或按 DESIGN，仅在会堵住新插入时被回收），不要求它们出现在主题上。归档 L-16c：VERIFY_OK 30/30，`verify_rc=0`，证据目录 `reports/l16-abc-20260925-215439/`（子目录 `l16c/`）。
 
 ## 7. 收尾拆栈
 

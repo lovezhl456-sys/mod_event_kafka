@@ -2,7 +2,7 @@
 
 本页描述 **mod_event_kafka** 拨测用的实验室 Kafka，并列出和生产参照之间的差异。证据与步骤都来自实验室机器，**未经生产验证**。候选补丁 `0001-kafka-restart-resilience.patch` 的状态是 **NOT_VERIFIED**，只作反面参考，不作为部署依据。
 
-模块安装与回滚见 [DEPLOY-ROLLBACK.md](DEPLOY-ROLLBACK.md)。断连演练见 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md)。
+模块安装与回滚见 [DEPLOY-ROLLBACK.md](DEPLOY-ROLLBACK.md)。故障映射见 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md)（已 empirically 的是 FS-01、FS-09）。断连演练见 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md)。验收门是 `scripts/verify_event_ids.py`。
 
 ## 两套路径
 

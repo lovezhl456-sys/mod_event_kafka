@@ -1,190 +1,212 @@
-# Kafka 故障场景
+# 故障场景矩阵 — FAULT-SCENARIOS
 
-本页对照 [DESIGN.md](DESIGN.md) 的 outbox 与 `outbox-ttl-ms`，列出实验室里已经跑过的断连，以及尚未 empirically 执行的场景。状态名与 [TEST-PLAN.md](TEST-PLAN.md)、[STATUS.md](STATUS.md) 一致。
+> **文档性质：** 草案。将 Kafka / 网络 / 容量 / TTL / 进程类故障映射到 `docs/TEST-PLAN.md` 的 L-xx 与验收门。  
+> **诚实口径：** 仅当 `docs/STATUS.md` / `docs/TEST-PLAN.md` 明确写 **PASS** 时标为「已 empirically」。其余一律「文档草案 / 未 empirically」。候选补丁 `0001` = **NOT_VERIFIED**（反面参考），不得借本文件宣称已验证。  
+> **契约来源：** `docs/DESIGN.md`、`docs/RELIABILITY.md`。具体 toxiproxy / docker / FS 命令由安装软件大师维护；此处只写高层注入意图。  
+> **实验室拓扑（Phase1）：** 单节点 KRaft + 3 个 toxiproxy 前端（`19092–19094`）均指向同一 broker。禁用全部代理 = 客户端完全断开；真·3 broker / ISR / 滚动重启仍推迟。
 
-**未经生产验证。** 下面凡是写 PASS 的，都是 2026-09-25 实验室记录。候选补丁 `0001-kafka-restart-resilience.patch` 保持 **NOT_VERIFIED**，只作反面参考：它会在重建 producer 时丢掉 librdkafka 内存队列，不能用来给任何一行打 PASS。
+各场景的「如何注入」保持高层意图。具体命令由安装软件大师补齐后再挂到对应行，本文件先不写 toxiproxy / docker / FS 操作细节。已归档的 FS-01、FS-09 照做步骤见 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md)；拓扑见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md)。
 
-实验室客户端看到的「整集群断连」是 toxiproxy 把 `kafka1`/`kafka2`/`kafka3` 全部 `enabled=false`。单个 Kafka 进程可以仍在运行。这和杀掉三个独立 broker 不是同一次操作。Phase1 只有一个 KRaft 进程，见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md)。
-
-预期行为的共同规则（DESIGN）：
-
-- 已 `COMMIT` 进 SQLite、且年龄未超过 `outbox-ttl-ms`（默认 `120000`）的行：瞬时失败则保留，指数退避后重试，恢复后排空，无需 `reload mod_event_kafka`。
-- `now_ms - created_at_ms > outbox-ttl-ms` 的 **pending** 行：`state=dead`，`last_error=expired_ttl`，计入 `outbox_expired`，不投递。
-- in-flight 行不就地过期。投递成功则删除；失败退回 pending 后，若已超过 TTL，下一轮再标 `expired_ttl`。
-- 永久失败（认证、主题授权、非法消息）：`state=dead`，`last_error` 留证据，不进入紧重试循环。这和 `expired_ttl` 不是同一类。
-- `COMMIT` 之前只在内存里的事件，进程崩溃可以丢失。broker ACK 之后、本地删除之前崩溃，可能重复；消费端按头 `x-fs-event-id` 去重。
-
-## 覆盖一览
-
-| 场景 | 实验室结论 | 用例 | 证据 |
-|------|------------|------|------|
-| 整集群断连，短断约 35s | 已跑，PASS | L-02、L-07、L-16a | 见下节 |
-| 超 TTL 长断约 150s | 已跑，PASS | L-16b | `reports/l16-abc-20260925-215439/` |
-| 恢复后的新呼叫 | 已跑，PASS | L-16c | 同上 |
-| 超 TTL 过期丢弃 | 已跑，PASS | L-16b | 同上 |
-| 单入口 disable | **文档草案 / 未 empirically** | 接近但不等价于 L-04（PLANNED） | 无 |
-| 抖动 / 延迟 toxics | **文档草案 / 未 empirically** | L-03、L-12（PLANNED） | 无 |
-| TCP RST / reset-peer | **文档草案 / 未 empirically** | L-03、L-10（PLANNED） | 无 |
-| 网络黑洞 > `message-timeout-ms` | **文档草案 / 未 empirically** | L-11（PLANNED） | 无 |
-| Broker 滚动重启 / SIGKILL | **文档草案 / 未 empirically** | L-08、L-09（PLANNED） | 无 |
-| 内存队列打满 `mem-queue-max` | **文档草案 / 未 empirically** | L-05（PLANNED） | 无 |
-| 磁盘 / outbox 满 | **文档草案 / 未 empirically** | L-13（PLANNED） | 无 |
-| 模块或进程杀掉后恢复 | **文档草案 / 未 empirically** | L-06、L-14（PLANNED） | 无 |
-| 永久性 produce 错误 → dead | **文档草案 / 未 empirically** | L-15（PLANNED） | 无 |
-
-L-03 至 L-15 在 STATUS 里记为未完整跑过。单元测试里相关的行（例如队列容量、磁盘字节上限、`dead` 标记）不能代替上表的实验室用例。
+`docs/STATUS.md` 记录的 L-16 证据目录是 `reports/l16-abc-20260925-215439/`。下文在该目录下另列 `l16a/`、`l16b/`、`l16c/`，与 STATUS 同一次运行，不另造证据根路径。验收门一律是 `scripts/verify_event_ids.py`。
 
 ---
 
-## 已有实验室记录
+## 覆盖图例
 
-### 整集群断连（toxiproxy 全 disable），短断约 35s
+| 标记 | 含义 |
+|------|------|
+| **已 empirically（PASS）** | STATUS/TEST-PLAN 已写 PASS，并有 `reports/…` 证据 |
+| **文档草案 / 未 empirically** | TEST-PLAN 为 PLANNED，或 STATUS 写明「L-03–L-15 未完整跑过」 |
+| **部分相关已 empirically** | 场景意图与某次 PASS 运行重叠，但未作为独立 L-xx 门禁跑完 |
 
-**现象。** 三个代理一起禁用约 35 秒，然后重新启用。35 秒大于 `message-timeout-ms` 默认 `30000`，小于 `outbox-ttl-ms` 默认 `120000`。Kafka 进程保持运行。拨测不 reload 模块。
-
-**预期模块行为。** 断连属于瞬时错误：已提交的行留在 outbox，退避重试。恢复后在 TTL 内排空。未 ACK 的行以同一个 event_id 再投递。消费端用 `x-fs-event-id` 去重。不需要 `reload mod_event_kafka`。
-
-**覆盖。**
-
-- FS Phase2：**L-02=PASS**，**L-07=PASS**。拨号 `dialtest_originate.sh`，loopback/park，切断前 ×5、切断期间 ×5。`buffer-size=100000`，主题 `fs_events`，bootstrap 仅 toxiproxy。`verify_event_ids.py` VERIFY_OK，注入 60、匹配 60、missing=0。`module_exists=true`。park 路径可能没有 ANSWER，事件以 CREATE/HANGUP* 为主。
-- 同日夜间 TTL 配置下的短断：**L-16a=PASS**（`verify_rc=0`）。模块 `outbox-ttl-ms=120000`。注入 60，匹配 60。拨号脚本是 `dialtest_fast.sh`。
-- 另有一条稳定 `KafkaPipeline` 测试架记录（不是 FreeSWITCH `.so`）：主题 `fs_events_l02b`，同样禁用三个代理 35 秒，不停止流水线。reload 前 enqueued=60、produce_ok=90、acked=60、delivery_fail=30、producer_rebuilds=0，outbox pending/in_flight/dead=0，`healed_without_reload=1`。`verify_event_ids.py` 退出码 0。TEST-PLAN 里 L-02/L-07 的 PASS 注记指向这次测试架。
-
-**证据。**
-
-- FS 模块：`reports/l02-l07-fs-20260925-133618/`
-- FS + TTL 短断（L-16a）：`reports/l16-abc-20260925-215439/`
-- 测试架（非 `.so`）：`reports/l02-l07-run1790313218/`
-
-### 超 TTL 长断约 150s
-
-**现象。** `toxiproxy_cut_restore.sh 150`（默认时长就是 150 秒）把三个代理全部禁用，长于 `outbox-ttl-ms=120000`。恢复后检查 outbox 与主题。
-
-**预期模块行为。** 切断期间已提交、并且到恢复时年龄已超过 TTL 的 pending 行标为 `dead` / `expired_ttl`，不 produce。尚未超过 TTL 的行仍走自愈排空。过期死信不在 `fetch_due` 里，恢复后的新工作优先。
-
-**覆盖。** **L-16b=PASS**。
-
-**证据。** `reports/l16-abc-20260925-215439/`
-
-- 过期行：`dead` / `expired_ttl`。注入期间与已老化集合里 expired_ttl dead=30
-- `expired_still_in_topic=0`（这些过期 event_id 不在主题上）
-- `consumed_matched=30 / 60`：未过期的那一部分已送达
-
-这次 PASS 不是「60 条全部出现在主题上」。对**整份**注入集合跑 `verify_event_ids.py` 时，过期 id 会算作 missing，除非把它们单独列入拒绝/过期清单。主题侧的验收是过期 id 不在主题上，未过期 id 在主题上。
-
-### 恢复后新呼叫
-
-**现象。** 长断恢复、代理重新 `enabled=true` 之后，再发起新的 loopback 呼叫。
-
-**预期模块行为。** 新事件照常入队、写入 outbox、投递。过期死信不挡住新的 pending。不需要 reload。
-
-**覆盖。** **L-16c=PASS**（`verify_rc=0`）。新呼叫 VERIFY_OK 30/30。
-
-**证据。** `reports/l16-abc-20260925-215439/`（与 L-16a/L-16b 同一目录）。拨号辅助脚本：`/workspace/lab-mod-event-kafka/dialtest_fast.sh`。
-
-### 超 TTL 过期丢弃
-
-**现象。** pending 行的年龄超过 `outbox-ttl-ms` 后仍未投递成功。实验室里对应的触发方式就是上一节的约 150 秒全断，不是单独一条「只改 TTL、不断网络」的用例。
-
-**预期模块行为。** `state=dead`，`last_error=expired_ttl`，指标 `outbox_expired` 增加，该行不进入 produce。`outbox-ttl-ms=0` 时关闭这条规则。in-flight 不在本规则里直接改成过期。这是有意丢掉过期话务状态。永久性 `dead`（认证等）不会为了腾出空间被删掉；`expired_ttl` 行只在会堵住新插入时被回收。
-
-**覆盖。** **L-16b=PASS**（见上）。证据目录 `reports/l16-abc-20260925-215439/`：expired_ttl dead=30，`expired_still_in_topic=0`。
+**通用验收脚本：** `scripts/verify_event_ids.py reports/<run-id>/`  
+产物至少含 `injected_ids.txt`、`consumed_ids.txt`（头 `x-fs-event-id`）；可选 `rejected_ids.txt`、`outbox_snapshot.csv`。  
+退出码：`0` VERIFY_OK；`1` 集合不匹配；`2` 同通话顺序失败；`3` 产物损坏。
 
 ---
 
-## 文档草案 / 未 empirically
+## 场景总表
 
-下列场景只写设计预期和 TEST-PLAN 里的计划编号。没有实验室 PASS，也没有证据目录。执行前以 [TEST-PLAN.md](TEST-PLAN.md) 的 PLANNED 行为准，跑完再改 STATUS，不要把本页草案写成已验证。
+### FS-01 整集群断开（客户端视角完全断连）
 
-### 单入口 disable（kafka1 / kafka2 / kafka3 之一）
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-01 / 整集群断开（toxiproxy 全切） |
+| **如何注入** | 高层：toxiproxy 禁用全部前端 `kafka1/kafka2/kafka3`（切断时长建议 > `message-timeout-ms`，短切约 35s）；恢复时全部重新启用。**不** `reload mod_event_kafka`、不重启 FS。拨测在切断前与切断中各注入一批事件。 |
+| **预期模块行为** | FS 回调仅深拷贝入队，不在网络/磁盘上阻塞；worker 写入 SQLite outbox 后 produce；poll 线程持续 `rd_kafka_poll`（**不**跨 `rd_kafka_poll` 持 `rk_mu_`）；未 ACK 行留 pending/重试；恢复后 outbox 排空；稳定 `event_id` 经头 `x-fs-event-id` 重放；同通话按 `call_uuid`+`created_at_ms` FIFO。 |
+| **验收门** | `scripts/verify_event_ids.py`：`set(injected)-set(consumed_dedup)-rejected==∅`（允许写明的 pre-COMMIT 丢失）；排空后 `pending+in_flight==0`；**reload 前**采集即通过（自愈门）；报告 `dupes_in_consume`。 |
+| **L-xx 覆盖** | **已 empirically：** **L-02=PASS**、**L-07=PASS**（稳定架 + FS Phase2）；短切亦覆盖 **L-16a=PASS**。 |
+| **证据路径** | `reports/l02-l07-run1790313218/`（稳定架）；`reports/l02-l07-fs-20260925-133618/`（FS，VERIFY_OK 60/60）；`reports/l16-abc-20260925-215439/l16a/`（短切 35s，60/60） |
 
-**现象（草案）。** 只把一个代理设为 `enabled=false`，例如 `toxiproxy_cut_restore.sh 35 kafka1`。另外两个端口仍转发到同一个 `kafka-1:9094`。
+---
 
-**预期模块行为。** 客户端仍可通过其余 bootstrap 地址到达唯一的 broker。个别连接失败按瞬时错误退避；已提交的行保留。不应当出现「三个入口一起断开」时的整段停顿。
+### FS-02 单个 bootstrap 入口禁用
 
-**覆盖。** **文档草案 / 未 empirically。** TEST-PLAN **L-04**（单个 broker 宕机且 ISR 仍满足，produce 继续）状态是 **PLANNED**。L-04 需要真实多 broker。本实验室禁用一个 toxiproxy 名字时，上游仍是同一个进程，不能当作 L-04 已覆盖。
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-02 / 单 bootstrap 入口禁用 |
+| **如何注入** | 高层：仅禁用 toxiproxy 三前端之一（另两路仍通）。真·「单 broker 宕机」需 3 broker 拓扑（当前 Phase1 三前端同源，禁用一路通常仍可达）。 |
+| **预期模块行为** | 客户端应经剩余 bootstrap 继续 produce；无持续 `rejected_*`；瞬时失败走退避/重试；回调仍不阻塞。 |
+| **验收门** | `verify_event_ids.py` 完整性；指标上 `produce_ok` 继续、无长期积压；对比「禁用一路 vs 全切」差异。 |
+| **L-xx 覆盖** | **文档草案 / 未 empirically。** 最接近 **L-04**（单 broker 宕机，PLANNED）。Phase1 三前端同源，不能替代真 ISR 测试。 |
+| **证据路径** | （无独立 PASS 报告） |
 
-**证据。** 无。
+---
 
-### 抖动 / 延迟 toxics
+### FS-03 抖动 / 延迟（latency / jitter）
 
-**现象（草案）。** 在 toxiproxy 上对 `kafka1`/`kafka2`/`kafka3` 添加 latency 等 toxic，或反复开关。当前仓库里的 `lab/toxiproxy.json` 只有三条启用的代理，没有预置 toxic。
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-03 / 网络延迟与抖动 |
+| **如何注入** | 高层：toxiproxy latency / jitter toxic（可叠加限速）；持续拨测加压。 |
+| **预期模块行为** | 瞬时失败保留 outbox 行 + 指数退避（含抖动）；内存队列仅在容量处拒绝（`rejected_mem_full` + WARNING）；**绝不**阻塞媒体/回调线程；线程与内存稳定。 |
+| **验收门** | `verify_event_ids.py` 最终集合完整（去重后）；加压期间无 FS 卡死；拒绝须有 `rejected_ids.txt`/日志对应，禁止静默丢。 |
+| **L-xx 覆盖** | **文档草案 / 未 empirically。** 对应 **L-12**、**L-03**（均为 PLANNED）。 |
+| **证据路径** | （无） |
 
-**预期模块行为。** 传输变慢或抖动属于瞬时类：行留在 outbox，退避，最终 ACK。重复只出现在「broker 已 ACK、本地尚未删除」的窗口，消费端按 `x-fs-event-id` 去重。拒绝只发生在 `mem-queue-max` 或 outbox 容量打满时，媒体线程不被网络堵住。超过 TTL 的 pending 仍按 `expired_ttl` 丢弃。
+---
 
-**覆盖。** **文档草案 / 未 empirically。** **L-03**（produce 期间 reset-peer / 延迟）与 **L-12**（延迟 / 反复抖动）均为 **PLANNED**。
+### FS-04 TCP RST / reset-peer
 
-**证据。** 无。
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-04 / 连接 RST |
+| **如何注入** | 高层：toxiproxy `reset_peer`（或全部被代理端口上的 RST）；produce/poll 期间注入。 |
+| **预期模块行为** | 视为瞬时故障：行保留、退避重试；路径恢复后**无需 reload** 即可排空；可能出现 ACK 窗口重复 → 消费端按 `x-fs-event-id` 去重。 |
+| **验收门** | `verify_event_ids.py`；reload 前自愈；报告 `dupes_in_consume`（去重后不得残留重复判定失败）。 |
+| **L-xx 覆盖** | **文档草案 / 未 empirically。** 对应 **L-10**、**L-03**（PLANNED）。与 FS-01「全 disable」不同，RST 为连接级重置。 |
+| **证据路径** | （无） |
 
-### TCP RST / reset-peer
+---
 
-**现象（草案）。** toxiproxy `reset_peer`，或链路上对代理端口发 TCP RST。L-10 的范围是全部被代理的 broker 端口。
+### FS-05 黑洞超时（blackhole / 全丢包）
 
-**预期模块行为。** 与断连一样保留 outbox 行并退避。路径恢复且行未过期时，无需 reload 即可排空。已超过 TTL 的 pending 改为 `dead` / `expired_ttl`，不投递。
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-05 / 网络黑洞 > `message-timeout-ms` |
+| **如何注入** | 高层：toxiproxy timeout / 全丢 toxic，时长 **>** `message-timeout-ms`（默认主题侧 30s）；再恢复。区别于「disable 代理」（后者更接近连接拒绝）。 |
+| **预期模块行为** | 行保持 pending/重试（未超 TTL）；恢复后旧到点行排空；**新**事件仍可入队并发送；回调不阻塞。若切断 **>** `outbox-ttl-ms`，见 FS-09。 |
+| **验收门** | `verify_event_ids.py`（未过期集合完整）；指标 `delivery_fail` 可升、`outbox` 终态合理；reload 前自愈。 |
+| **L-xx 覆盖** | **部分相关已 empirically：** 全代理 disable 35s（>30s timeout）已在 **L-02/L-07** 验证，但正式 **L-11**（blackhole toxic）仍为 **PLANNED / 未 empirically**。 |
+| **证据路径** | 相关短切：`reports/l02-l07-fs-20260925-133618/`；L-11 专用：（无） |
 
-**覆盖。** **文档草案 / 未 empirically。** **L-03**、**L-10** 均为 **PLANNED**。前面的 35 秒用例是代理 `enabled=false`，不是 RST。
+---
 
-**证据。** 无。
+### FS-06 Broker 重启 / 进程崩溃
 
-### 网络黑洞，时长大于 message-timeout-ms
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-06 / Broker 重启或 SIGKILL |
+| **如何注入** | 高层：停止/SIGKILL Kafka 容器或进程后拉起；或滚动重启（一次一个 broker，需真多 broker）。客户端 bootstrap 仍只走代理。 |
+| **预期模块行为** | 与瞬时故障相同：已 COMMIT 的 outbox 不永久丢失；自动重试排空；无需 reload；librdkafka 内存队列可丢，但磁盘 outbox 为事实来源。 |
+| **验收门** | `verify_event_ids.py`；排空后 pending/in_flight=0；滚动场景下已提交行无永久缺失。 |
+| **L-xx 覆盖** | **部分相关已 empirically：** 客户端侧「全断开再恢复」由 **L-02/L-07** 覆盖。正式 **L-08**（滚动）、**L-09**（broker SIGKILL）= **PLANNED / 未 empirically**（真 3 broker 推迟）。 |
+| **证据路径** | 相关：`reports/l02-l07-run1790313218/`、`reports/l02-l07-fs-20260925-133618/`；L-08/L-09：（无） |
 
-**现象（草案）。** 数据面丢包、没有 RST（toxiproxy timeout / 黑洞），持续时长大于 `message-timeout-ms`（默认 `30000`）。短于 TTL 时，恢复后旧行和新事件都应还能送出。长于 TTL 时，过期规则叠加生效。
+---
 
-**预期模块行为。** TEST-PLAN L-11：行保持 pending 或重试；恢复后新事件仍入队并发送，到点的旧行排空。DESIGN 在此之上增加 TTL：pending 年龄超过 `outbox-ttl-ms` 则 `expired_ttl`，不再投递。
+### FS-07 内存队列满（queue full）
 
-**覆盖。** **文档草案 / 未 empirically。** **L-11** 为 **PLANNED**。35 秒全 disable 已经长于 `message-timeout-ms`，但那是代理关闭，记录在 L-02/L-07/L-16a，不记成 L-11。
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-07 / `mem-queue-max` 背压 |
+| **如何注入** | 高层：将 `mem-queue-max` 调小；在 broker 不可达或 worker 缓慢时高速灌事件，使有界队列溢出。 |
+| **预期模块行为** | `try_push` 失败 → `rejected_mem_full` + WARNING；**显式拒绝、不静默丢**；**不**阻塞 FS 媒体/回调线程；已入队/已 outbox 行仍按至少一次路径处理。 |
+| **验收门** | 每个拒绝 ID 出现在 `rejected_ids.txt`/日志；`verify_event_ids.py`：`missing` 不计已拒绝集合；FS 拨测无卡死。 |
+| **L-xx 覆盖** | **文档草案 / 未 empirically。** 对应 **L-05**（PLANNED）。单元侧有界队列有 U-Q-*，不替代本实验室门。 |
+| **证据路径** | （无） |
 
-**证据。** 无。
+---
 
-### Broker 滚动重启 / SIGKILL
+### FS-08 磁盘 / outbox 满
 
-**现象（草案）。**
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-08 / outbox 行数或字节上限 / INSERT 失败 |
+| **如何注入** | 高层：压低 `outbox-max-rows` / `outbox-max-bytes`，或使 `outbox-path` 不可写 / 磁盘满，迫使 `insert_pending` 失败。 |
+| **预期模块行为** | 拒绝 + `rejected_disk_full`（或打开失败告警）；不崩溃；不静默丢；不错误 ACK；pending 存活行不为腾空间被删（过期 dead 回收规则见 RELIABILITY）。 |
+| **验收门** | 拒绝可追溯；进程存活；`verify_event_ids.py` 对**已接受** ID 仍完整；指标/日志可见。 |
+| **L-xx 覆盖** | **文档草案 / 未 empirically。** 对应 **L-13**（PLANNED）。单元 U-DSK-02/03 有 CODED/PASS，非 FS 实验室。 |
+| **证据路径** | （无实验室 PASS） |
 
-- 滚动重启：一次停一个 broker，bootstrap 里的每个地址都经过代理（L-08）。本实验室只有 `lab-kafka-1` 一个进程，做不到「停一个、其余继续服务」。
-- SIGKILL：杀掉 broker 进程（L-09）。实验室里若 `docker kill lab-kafka-1`，唯一的上游消失，三个代理的上游一起不可用。
+---
 
-**预期模块行为。** 已提交的行保留在 outbox。进程重新起来且行未过期时自动重试，无需 reload。客户端致命错误（`RD_KAFKA_RESP_ERR__FATAL`）时在锁内重建 producer，outbox 仍是事实来源。超过 TTL 的 pending 标 `expired_ttl`。
+### FS-09 超过 Outbox TTL（beyond TTL）
 
-**覆盖。** **文档草案 / 未 empirically。** **L-08**、**L-09** 均为 **PLANNED**。35 秒与 150 秒记录都是 toxiproxy 禁用，Kafka 进程保持运行。
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-09 / pending 超过 `outbox-ttl-ms` |
+| **如何注入** | 高层：配置 `outbox-ttl-ms=120000`（或实验值）；toxiproxy **全切时长 > TTL**（如 150s）；切断前与切断中注入；恢复后再拨新呼叫。对照：短切 **≤ TTL** 应完整送达。 |
+| **预期模块行为** | `now_ms - created_at_ms > outbox-ttl-ms` 的 **pending** → `state=dead`、`last_error=expired_ttl`、计 `outbox_expired`，**不投递**；in-flight 不就地过期；恢复后 dead 不进 `fetch_due`，新事件优先；短切不触发过期，走自愈排空。 |
+| **验收门** | 短切：`verify_event_ids.py` 全量 OK。长切：过期 ID **不得**出现在 topic（`expired_still_in_topic=0`）；未过期子集应匹配；outbox 可见 `dead/expired_ttl`；自愈后新注入集合 VERIFY_OK。 |
+| **L-xx 覆盖** | **已 empirically：** **L-16a=PASS**（短切 35s，60/60）、**L-16b=PASS**（150s>TTL，matched=30/60，expired_ttl，expired_still_in_topic=0）、**L-16c=PASS**（自愈后 30/30）。注：L-16a/b/c 写在 STATUS 证据中，**尚未作为 TEST-PLAN §3.2 矩阵正式行**。 |
+| **证据路径** | `reports/l16-abc-20260925-215439/`（子目录 `l16a/`、`l16b/`、`l16c/`）；模块 `outbox-ttl-ms=120000`（master `37e89154`） |
 
-**证据。** 无。
+---
 
-### 内存队列打满 mem-queue-max
+### FS-10 进程杀死与恢复（FS / 模块 SIGKILL）
 
-**现象（草案）。** 入队速度超过 worker 取走速度，内存队列深度达到 `mem-queue-max`（默认 `10000`；实验室示例配置也是 `10000`）。`buffer-size`（实验室 FS 配置为 `100000`）是另一项 librdkafka 缓冲，不要和这个上限混用。
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-10 / FS 或模块进程杀死后恢复 |
+| **如何注入** | 高层：中断期间对 FS/模块进程 SIGKILL（或 unload）；再拉起 FS / `load mod_event_kafka`；broker 随后恢复。可叠加 outage。 |
+| **预期模块行为** | 已 COMMIT 未 ACK 行留在磁盘；启动 `requeue_in_flight`；以**同一** `event_id` / `x-fs-event-id` 重放；ACK 与本地 DELETE 之间崩溃可导致重复 → 消费端去重；COMMIT 前仅内存队列窗口可能丢（RELIABILITY 丢失窗口）。关闭顺序：停入队 → 内存排入 outbox → flush/poll → join。 |
+| **验收门** | 重启前后 outbox 快照对比；`verify_event_ids.py` 对已持久化 ID 至少一次；重复仅允许在去重语义下。 |
+| **L-xx 覆盖** | **文档草案 / 未 empirically。** 对应 **L-14**、**L-06**（均为 PLANNED）。**不得**用 L-02「未 reload 自愈」冒充本场景。 |
+| **证据路径** | （无） |
 
-**预期模块行为。** `try` 入队失败时增加 `rejected_mem_full`（以及设计里的 `event_kafka_rejected_total`），打 WARNING，回调返回。媒体线程不等待网络或磁盘。被拒绝的事件没有 outbox 行，必须出现在拒绝清单里，不能只看指标。已经入队并 `COMMIT` 的行不受这次拒绝的影响。
+---
 
-**覆盖。** **文档草案 / 未 empirically。** **L-05** 为 **PLANNED**。有界队列的单元测试（U-Q-01 CODED、U-Q-02 PASS）只覆盖库，不是 FS 拨测。
+## TEST-PLAN 中已规划但未完整跑过的 L-xx
 
-**证据。** 无。
+摘自 master `docs/TEST-PLAN.md` §3.2 与 `docs/STATUS.md`「未宣称：L-03–L-15 未完整跑过」：
 
-### 磁盘 / outbox 满
+| ID | 故障摘要 | TEST-PLAN 状态 |
+|----|----------|----------------|
+| **L-01** | 正常路径全量 event_id 各一次 | PLANNED |
+| **L-03** | toxiproxy reset-peer / 延迟 | PLANNED |
+| **L-04** | 单 broker 宕机（ISR 仍可） | PLANNED |
+| **L-05** | `mem-queue-max` 压力 | PLANNED |
+| **L-06** | 中断中卸载/重新加载模块 | PLANNED |
+| **L-08** | 滚动重启（需真多 broker） | PLANNED |
+| **L-09** | Broker SIGKILL | PLANNED |
+| **L-10** | 全部代理端口 TCP RST | PLANNED |
+| **L-11** | 黑洞 > `message-timeout-ms` | PLANNED |
+| **L-12** | 延迟 / 反复抖动 | PLANNED |
+| **L-13** | 磁盘满 / outbox INSERT 失败 | PLANNED |
+| **L-14** | FS/模块 SIGKILL 后重放同 event_id | PLANNED |
+| **L-15** | 认证/ACL 等永久错误 → `dead` | PLANNED |
 
-**现象（草案）。** `outbox-path` 所在磁盘写满，或行数达到 `outbox-max-rows`（默认 `100000`），或体积达到 `outbox-max-bytes`（默认 `512MB`）。实验室 outbox 文件路径是 `/usr/local/freeswitch/var/lib/freeswitch/db/event_kafka_outbox.db`。
+**已 PASS（勿与上表混淆）：**
 
-**预期模块行为。** `insert_pending` 失败，走 `rejected_disk_full`，告警，不静默丢弃，进程不崩。已经在库里的行保持原样，不能被标成已 ACK。`outbox-path` 本身打不开时，打开失败要显式返回错误（U-DSK-01 仍是 PLANNED）。
+| ID | 结论 | 证据 |
+|----|------|------|
+| **L-02** | PASS（稳定架 + FS Phase2） | `reports/l02-l07-run1790313218/`、`reports/l02-l07-fs-20260925-133618/` |
+| **L-07** | PASS（与 L-02 同次；reload 前自愈） | 同上 |
+| **L-16a/b/c** | PASS（FS+TTL；STATUS 证据；非正式 TEST-PLAN 矩阵行） | `reports/l16-abc-20260925-215439/` |
 
-**覆盖。** **文档草案 / 未 empirically。** **L-13** 为 **PLANNED**。单元侧 U-DSK-02（行数，CODED）和 U-DSK-03（字节上限，PASS）不是 FS 实验室记录。
+---
 
-**证据。** 无。
+## 场景 ↔ L-xx 速查
 
-### 模块 / 进程杀掉后恢复（同一 event_id 重放）
+| 架构师场景 | 主 L-xx | 覆盖诚实标记 |
+|------------|---------|--------------|
+| 整集群断开 | L-02 / L-07（+L-16a 短切） | 已 empirically |
+| 单 bootstrap 入口禁用 | L-04（近） | 文档草案 / 未 empirically |
+| 抖动/延迟 | L-12 / L-03 | 文档草案 / 未 empirically |
+| RST | L-10 / L-03 | 文档草案 / 未 empirically |
+| 黑洞超时 | L-11（相关：L-02 全切） | L-11 未跑；L-02 部分相关 |
+| Broker 重启 | L-08 / L-09（相关：L-02） | L-08/09 未跑；L-02 部分相关 |
+| 队列满 | L-05 | 文档草案 / 未 empirically |
+| 磁盘/outbox 满 | L-13 | 文档草案 / 未 empirically |
+| 超过 TTL | L-16a/b/c | 已 empirically（STATUS） |
+| 进程杀死恢复 | L-14 / L-06 | 文档草案 / 未 empirically |
 
-**现象（草案）。** 中断过程中 `SIGKILL` FreeSWITCH 或模块进程，再启动；或者中断期间 `unload`/`load`（L-06）。
+---
 
-**预期模块行为。** 已经 `COMMIT` 的未 ACK 行留在 SQLite 里。下次加载时 `requeue_in_flight` 把 in-flight 改回 pending，用**同一个** event_id 再投递，头仍是 `x-fs-event-id`。`COMMIT` 之前的内存事件可以丢失。若 broker 已经 ACK 而本地删除没提交，消费端会看到重复，按该头去重。关闭顺序见 DESIGN：停止入队 → 内存排入 outbox → flush/poll → join → 销毁 producer。
+## 维护说明
 
-**覆盖。** **文档草案 / 未 empirically。** **L-14**、**L-06** 均为 **PLANNED**。已有 PASS 的短断与长断都明确没有 reload，也没有杀进程。单元 U-REC-01/02（CODED）和 U-UNL-01/02（PASS）不是这条实验室用例。
-
-**证据。** 无。
-
-### 永久性 produce 错误 → dead
-
-**现象（草案）。** 认证失败、ACL/主题授权失败或非法消息，librdkafka 返回永久性错误。与网络断开、超时不同。
-
-**预期模块行为。** `state=dead`，`last_error` 留下错误文本，告警计数增加，不再紧循环重试。该行可以留在库里作证据。这不是 `expired_ttl`：过期行的 `last_error` 固定为 `expired_ttl`，由年龄触发，已由 L-16b 覆盖。
-
-**覆盖。** **文档草案 / 未 empirically。** **L-15** 为 **PLANNED**。单元 U-RTY-03 对 `dead` 标记是 CODED，错误分类映射仍是 PLANNED，且没有 FS 拨测证据。
-
-**证据。** 无。
+1. 新跑通场景：更新本文件对应行的「L-xx 覆盖」与「证据路径」，并同步 `docs/STATUS.md` / `docs/TEST-PLAN.md` 状态列。  
+2. 通过规则以 **event_id 集合** 为准，禁止仅凭「无错误日志」宣称 PASS。  
+3. Phase1 单 broker + 三前端同源：FS-01 有效；FS-02/L-04/L-08 需真多 broker 后方可宣称。  
+4. 建议后续把 **L-16a/b/c** 正式写入 TEST-PLAN §3.2，避免仅存在于 STATUS。
