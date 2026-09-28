@@ -1,34 +1,17 @@
-# Kafka 部署（实验室与生产参照）
+# Kafka 部署说明（Lab 与生产参考）
 
-本页描述 **mod_event_kafka** 拨测用的实验室 Kafka，并列出和生产参照之间的差异。证据与步骤都来自实验室机器，**未经生产验证**。候选补丁 `0001-kafka-restart-resilience.patch` 的状态是 **NOT_VERIFIED**，只作反面参考，不作为部署依据。
+> **Lab 专用栈 ≠ 生产。** 本文以本机 Grok Bot 盒子上的真实路径与命令为准。  
+> FreeSWITCH / 客户端 **bootstrap 只能走 toxiproxy**，禁止直连生产或云端 Kafka。
 
-模块安装与回滚见 [DEPLOY-ROLLBACK.md](DEPLOY-ROLLBACK.md)。故障映射见 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md)（已 empirically 的是 FS-01、FS-09）。断连演练见 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md)。验收门是 `scripts/verify_event_ids.py`。
+## 1. Lab 拓扑（已验证）
 
-## 两套路径
+本机 Phase1 **未**跑通 3 节点 KRaft 选主（嵌套/vfs 环境不稳定），采用：
 
-实验室机器上的运行目录，和本仓库同步进来的副本，是同一套 Phase1 材料的两个位置。命令以实验室机器上的文件为准。
-
-| 用途 | 实验室机器 | 本仓库（同步后） |
-|------|------------|------------------|
-| 运行目录 / compose | `/workspace/lab-mod-event-kafka/` | `lab/docker-compose.yml` |
-| Phase1 说明 | `/workspace/lab-mod-event-kafka/README.md` | [lab/README.md](../lab/README.md) |
-| Phase2（FreeSWITCH） | `/workspace/lab-mod-event-kafka/README-PHASE2.md` | [lab/README-PHASE2.md](../lab/README-PHASE2.md) |
-| 代理定义 | `/workspace/lab-mod-event-kafka/toxiproxy.json` | `lab/toxiproxy.json` |
-| 模块示例配置 | 同上目录中的 FS 配置副本 | [lab/event_kafka.fs.conf.xml](../lab/event_kafka.fs.conf.xml) |
-| 拨测 | `/workspace/lab-mod-event-kafka/dialtest_originate.sh` | `lab/dialtest_originate.sh` |
-| 快速拨测 | `/workspace/lab-mod-event-kafka/dialtest_fast.sh` | 仓库 `lab/` 尚未收入该脚本 |
-| 切断 / 恢复 | `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh` | 仓库 `lab/` 尚未收入该脚本 |
-
-`dialtest_fast.sh` 与 `toxiproxy_cut_restore.sh` 的用法以实验室目录里的脚本为准（见 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md)）。
-
-## 实验室拓扑
-
-Phase1 是 **单个 KRaft 进程**（broker 与 controller 合一），前面放 toxiproxy。三个宿主机端口都转发到同一个 `kafka-1:9094`。这套布局用来模拟客户端看不到入口，**没有三个独立 broker**。3 broker、副本因子 2 的布局在实验室说明里记为推迟。
-
-| 容器 | 镜像 | 角色 |
-|------|------|------|
-| `lab-kafka-1` | `apache/kafka:3.8.1` | 单个 KRaft broker+controller。不对宿主机发布端口。堆 `-Xmx384M -Xms256M` |
-| `lab-toxiproxy` | `shopify/toxiproxy:2.1.4` | 三个前端 → 同一 broker 的 `EXTERNAL:9094`。宿主机端口 19092–19094，管理端口 8474 |
+| 组件 | 容器名 | 说明 |
+|------|--------|------|
+| 单节点 KRaft | `lab-kafka-1` | `apache/kafka:3.8.1`，heap `-Xmx384M`，桥接网 `lab-kafka`，**不**直接对宿主暴露业务口 |
+| toxiproxy | `lab-toxiproxy` | 3 个前端全部转发到同一 broker `EXTERNAL:9094` |
+| FreeSWITCH + 模块 | `lab-freeswitch` | 镜像 `lab-freeswitch:1.10.12-kafka`，**`--network host`** |
 
 客户端路径（唯一支持的 bootstrap）：
 
@@ -38,73 +21,156 @@ Phase1 是 **单个 KRaft 进程**（broker 与 controller 合一），前面放
 127.0.0.1:19094  →  toxiproxy(kafka3) → kafka-1:9094
 ```
 
-Bootstrap 字符串（模块 `bootstrap-servers` 只写这一条）：
+- **Bootstrap：** `127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094`
+- **Toxiproxy API：** `http://127.0.0.1:8474`
+- **Topic：** `fs_events`（partitions=3，RF=1）
+- **事件头：** `x-fs-event-id`（去重验收键，勿改名）
 
-```
-127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094
-```
+为何三个入口指向同一 broker：QA 可分别/同时 `disable` `kafka1/2/3`，模拟「客户端侧整集群不可达」，而 broker 进程本身仍可存活。
 
-- 管理 API：`http://127.0.0.1:8474`
-- 测试主题：`fs_events`（partitions=3，replication-factor=1）
-- 监听安全协议：`PLAINTEXT`（controller / internal / external）
-- 副本相关项在 compose 里都是 1：`KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR`、`KAFKA_DEFAULT_REPLICATION_FACTOR`、`KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR`，`MIN_ISR=1`
-- 存储驱动是 `vfs`，broker 日志在容器内 `/tmp`（`KAFKA_LOG_DIRS=/tmp/kraft-combined-logs`）
+## 2. 本机路径一览
 
-`EXTERNAL` 通告的是 `127.0.0.1:19092`。一次性客户端要用 `--network host`（或直接在宿主机上跑）。在 `lab-kafka-1` 里面访问宿主机上的 19092 会连到容器自己。
+| 用途 | 路径 |
+|------|------|
+| Compose / Phase1 | `/workspace/lab-mod-event-kafka/` |
+| 切流脚本 | `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh` |
+| 拨测 | `dialtest_originate.sh` / `dialtest_fast.sh` |
+| FS 前缀/模块缓存 | `/workspace/lab-mod-event-kafka/fs/` |
+| Lab conf（含 TTL） | `/workspace/lab-mod-event-kafka/fs/conf/autoload_configs/event_kafka.conf.xml` |
+| 模块源码（TTL 版） | `/workspace/mod_event_kafka-fix/work/` + `include/` + `src/` |
+| 验收脚本 | `/workspace/mod_event_kafka-fix/scripts/verify_event_ids.py` |
+| L-16 一键 | `/workspace/mod_event_kafka-fix/scripts/run_l16_abc.sh` |
+| 证据示例 | `/workspace/mod_event_kafka-fix/reports/l16-abc-20260925-215439/` |
 
-## 启动与停止
+Docker 命令统一用：`sg docker -c '...'`（用户在 `docker` 组，需通过 `sg` 生效）。
 
-在实验室机器上执行。容器之间如果出现 `UNRECORDED` votes 或 connection refused，先把 iptables-legacy 的 `FORWARD` 策略改成 `ACCEPT`（该机器上曾经是 `DROP`，桥接流量会被丢掉）：
+### 2.1 与本仓库 `lab/` 的对照
+
+上表是实验室机器上的绝对路径。本仓库 `lab/` 是其中一部分的同步副本。演练命令仍以绝对路径为准。
+
+| 实验室机器 | 本仓库 |
+|------------|--------|
+| `/workspace/lab-mod-event-kafka/docker-compose.yml` | `lab/docker-compose.yml` |
+| `/workspace/lab-mod-event-kafka/README.md` | `lab/README.md` |
+| `/workspace/lab-mod-event-kafka/README-PHASE2.md` | `lab/README-PHASE2.md` |
+| `/workspace/lab-mod-event-kafka/toxiproxy.json` | `lab/toxiproxy.json` |
+| `/workspace/lab-mod-event-kafka/dialtest_originate.sh` | `lab/dialtest_originate.sh` |
+| `/workspace/lab-mod-event-kafka/fs/conf/autoload_configs/event_kafka.conf.xml` | 参数对照见 `lab/event_kafka.fs.conf.xml`（仓库示例，不是容器里正在用的那份） |
+| `toxiproxy_cut_restore.sh`、`dialtest_fast.sh` | 尚未收入仓库 `lab/` |
+| `/workspace/mod_event_kafka-fix/`（含 `scripts/verify_event_ids.py`、`scripts/run_l16_abc.sh`、`reports/`） | 本仓库模块源码在根目录 `include/`、`src/`、`mod_event_kafka.cpp`；仓内验收脚本是 `scripts/verify_event_ids.py`（目录参数，见演练手册） |
+
+## 3. 起栈（Phase1：Kafka + toxiproxy）
 
 ```bash
-cd /workspace/lab-mod-event-kafka
+# 本机曾出现桥接互通失败：FORWARD 策略 DROP → UNRECORDED / connection refused
 sudo iptables-legacy -P FORWARD ACCEPT
+
+cd /workspace/lab-mod-event-kafka
 sg docker -c 'docker compose up -d'
-sg docker -c 'docker compose ps'
+sg docker -c 'docker compose ps'   # lab-kafka-1 应 healthy
+
+# 建 topic（走 broker 内部监听）
+sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --create --if-not-exists \
+  --topic fs_events --partitions 3 --replication-factor 1"
 ```
 
-停止并清掉卷：
+### 3.1 经 toxiproxy 冒烟（必须 host 网络）
+
+`EXTERNAL` 通告为 `127.0.0.1:19092`。在 bridge 容器内解析 `127.0.0.1` 会指到容器自身，**不要**在 `lab-kafka-1` 内对宿主映射口做 client 冒烟。
 
 ```bash
-cd /workspace/lab-mod-event-kafka
-sg docker -c 'docker compose down -v --remove-orphans'
+BOOT=127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094
+IMG=apache/kafka:3.8.1
+
+echo 'hello-fs-events' | sg docker -c "docker run --rm -i --network host $IMG \
+  /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server $BOOT --topic fs_events"
+
+sg docker -c "docker run --rm --network host $IMG \
+  /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server $BOOT \
+  --topic fs_events --from-beginning --timeout-ms 15000"
 ```
 
-只拿到本仓库时，compose 文件在 `lab/docker-compose.yml`，内容与实验室目录中的 compose 一致。在仓库里启动时把 `cd` 换成 `lab/` 所在目录；拨测、切断脚本仍使用上面的实验室绝对路径。
+### 3.2 切流 API 自检
 
-创建主题、经 toxiproxy 做生产/消费冒烟的命令写在 [lab/README.md](../lab/README.md) 的「健康检查 / 冒烟」一节。管理用的 `kafka-topics.sh` 走 broker 内部 `localhost:9092`；业务客户端只走 toxiproxy bootstrap。
+```bash
+curl -fsS http://127.0.0.1:8474/proxies | head
+/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 2   # 2 秒切断再恢复
+```
 
-FreeSWITCH 不在这份 compose 里。Phase2 容器 `lab-freeswitch`（镜像 `lab-freeswitch:1.10.12-kafka`，`--network host`）的启动方式见 [lab/README-PHASE2.md](../lab/README-PHASE2.md)。
+## 4. 起 FreeSWITCH + mod_event_kafka（Phase2）
 
-## 模块配置要点（实验室）
+镜像：`lab-freeswitch:1.10.12-kafka`（标签兼容脚本；历史构建曾基于本机 prefix，实际二进制版本可能显示为 `1.10.7-dev`，以容器内 `freeswitch -version` 为准）。
 
-运行中的文件：
+```bash
+sg docker -c 'docker rm -f lab-freeswitch' || true
+sg docker -c 'docker run -d --name lab-freeswitch --network host lab-freeswitch:1.10.12-kafka \
+  bash -c "export LD_LIBRARY_PATH=/usr/local/freeswitch/lib:/usr/local/lib; \
+    /usr/local/freeswitch/bin/freeswitch -nonat -nf -nc -nosql -rp"'
 
-`/usr/local/freeswitch/etc/freeswitch/autoload_configs/event_kafka.conf.xml`
+# 确认模块
+sg docker -c 'docker exec lab-freeswitch env LD_LIBRARY_PATH=/usr/local/freeswitch/lib:/usr/local/lib \
+  /usr/local/freeswitch/bin/fs_cli -x "module_exists mod_event_kafka"'
+```
 
-仓库里的对照副本：[lab/event_kafka.fs.conf.xml](../lab/event_kafka.fs.conf.xml)。
+容器内关键路径（当前镜像布局）：
 
-| 参数 | 实验室值 | 说明 |
-|------|----------|------|
-| `bootstrap-servers` | `127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094` | 只经 toxiproxy。不要写成 broker 容器网或生产集群地址 |
-| `topic` | `fs_events` | 与上面创建的主题一致 |
-| `buffer-size` | `100000` | XML 键名是 `buffer-size`。这是既有的 librdkafka 缓冲参数，和下面的 `mem-queue-max` 不是同一个队列 |
-| `outbox-ttl-ms` | `120000` | 模块默认也是 `120000`（2 分钟）。`0` 关闭过期。超过该时长的 **pending** 行标为 `dead`，`last_error=expired_ttl`，不再投递 |
-| `outbox-path` | `/usr/local/freeswitch/var/lib/freeswitch/db/event_kafka_outbox.db` | 实验室路径。设计文档中的默认路径是 `/var/lib/freeswitch/event_kafka_outbox.db` |
-| `mem-queue-max` | `10000` | 有界内存队列深度（模块默认） |
-| `message-timeout-ms` | `30000` | 须经 topic 配置生效 |
+- 模块：`/usr/local/freeswitch/mod/mod_event_kafka.so`
+- 配置：`/usr/local/freeswitch/conf/autoload_configs/event_kafka.conf.xml`
+- Outbox：`/usr/local/freeswitch/var/lib/freeswitch/db/event_kafka_outbox.db`
 
-Kafka 记录头名是 `x-fs-event-id`（正文 JSON 不改）。L-16 归档运行时模块配置为 `outbox-ttl-ms=120000`（对应仓库提交 `37e89154`）。
+### 4.1 Lab conf 要点（参数名保持英文）
 
-## 实验室与生产参照
+```xml
+<param name="bootstrap-servers" value="127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094"/>
+<param name="topic" value="fs_events"/>
+<param name="buffer-size" value="100000"/>
+<param name="outbox-path" value="/usr/local/freeswitch/var/lib/freeswitch/db/event_kafka_outbox.db"/>
+<param name="outbox-ttl-ms" value="120000"/>   <!-- 0=关闭过期 -->
+<param name="message-timeout-ms" value="30000"/>
+```
 
-| 项 | 实验室（本页） | 生产参照（尚未在本仓库验证） |
-|----|----------------|------------------------------|
-| Broker | 1 个 KRaft 进程 | 多个独立 broker |
-| 客户端入口 | 3 个 toxiproxy 端口，上游是同一个 `kafka-1:9094` | 真实的多地址 bootstrap，每个地址背后是对应 broker |
-| 副本 | replication-factor=1，`MIN_ISR=1` | 按集群要求设置副本与 ISR；单 broker 宕机时仍要满足 ISR |
-| 安全 | `PLAINTEXT`，用户名密码为空 | `security-protocol` 取 `SASL_PLAINTEXT` / `SASL_SSL` / `SSL`，并配置 `ssl-ca-location` |
-| 故障注入 | toxiproxy 禁用入口或（计划中的）toxics | 由变更窗口、滚动重启和真实网络策略执行，不把生产集群接到这套 toxiproxy |
-| 堆与磁盘 | 约 384M 堆，`vfs`，日志在容器 `/tmp` | 按容量规划的堆、持久化日志目录与监控 |
+加载成功日志应含：`outbox-ttl-ms: 120000`。
 
-不要把 FreeSWITCH、生产 Kafka 或云端 Kafka 接到这套实验室栈上。生产环境的安装顺序仍以 [DEPLOY-ROLLBACK.md](DEPLOY-ROLLBACK.md) 为准：`bootstrap-servers` 填目标环境自己的地址，`outbox-path` 对 FreeSWITCH 用户可写。
+### 4.2 更新模块后如何生效
+
+仅 `unload`/`load` 可能仍映射旧 `.so`。本机可靠做法：
+
+1. `docker cp` 新 `.so` + conf 进运行中容器  
+2. `fs_cli -x 'fsctl shutdown now'` 后 `docker start lab-freeswitch`（保留可写层）  
+3. 或重启容器后立刻再 `docker cp`，再 `unload`/`load`  
+4. 验证通过后可：`docker commit lab-freeswitch lab-freeswitch:1.10.12-kafka`
+
+## 5. 资源与限制（本机事实）
+
+- 存储驱动常为 **vfs**，日志宜少、堆宜小（Kafka ~384M）。
+- 真·3 broker RF≥2：**未**在本机 empirically 验证，仅作生产参考目标。
+- 拆栈（保留镜像与目录）：
+
+```bash
+sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
+# 或：cd /workspace/lab-mod-event-kafka && sg docker -c 'docker compose down -v --remove-orphans'
+# 再单独 rm lab-freeswitch（compose 不含 FS）
+```
+
+## 6. 生产参考（文档草案 / 未 empirically）
+
+以下**不是**本机 lab 命令，仅作规划对照：
+
+| 项 | Lab | 生产参考方向 |
+|----|-----|--------------|
+| 集群 | 单 KRaft + 三 proxy 入口 | 真多 broker / 受管云 Kafka |
+| 故障注入 | toxiproxy disable | 网络分区、滚动重启、ACL/配额（需另案） |
+| Bootstrap | 仅 toxiproxy 端口 | 业务 bootstrap；**勿**把 lab proxy 指到生产 |
+| 安全 | PLAINTEXT | SASL_SSL / SSL；conf 中 `security-protocol`、`ssl-ca-location` |
+| RF / ISR | RF=1 | RF≥2，min.insync.replicas≥2 |
+| 容量 | heap 384M、vfs | 独立磁盘、监控 outbox 行数与 `outbox_expired` |
+
+部署模块仍遵循 `docs/DEPLOY-ROLLBACK.md`：先装 librdkafka/sqlite，再装 `.so` + conf，确认 outbox 目录可写。
+
+## 7. 相关文档
+
+- 故障场景清单：`docs/FAULT-SCENARIOS.md`（由质检补 L-xx 映射）
+- 一步步演练：`docs/DRILL-RUNBOOK.md`
+- 设计与可靠性：`docs/DESIGN.md`、`docs/RELIABILITY.md`
+- 用例：`docs/TEST-PLAN.md`
