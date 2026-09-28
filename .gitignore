@@ -67,3 +67,12 @@ cmake-build-debug/
 
 # vagrant
 .vagrant
+
+# 本地密钥与实验室产物（勿提交）
+.env
+.env.*
+*.pem
+id_rsa
+id_rsa.*
+reports/
+**/smoke-*.txt
