@@ -38,7 +38,8 @@ Toxiproxy 管理 API：`http://127.0.0.1:8474`
 ## 启动 / 停止
 
 ```bash
-cd /workspace/lab-mod-event-kafka
+# 仓库根目录进入 lab/；共享机上该目录为 /workspace/lab-mod-event-kafka
+cd lab
 # 若容器间流量失败（UNRECORDED votes / connection refused）：
 sudo iptables-legacy -P FORWARD ACCEPT
 sg docker -c 'docker compose up -d'
@@ -74,9 +75,25 @@ sg docker -c "docker run --rm --network host $IMG \
   --topic fs_events --from-beginning --timeout-ms 15000"
 ```
 
+## 切流与拨测脚本
+
+在仓库根目录执行。共享实验室机器上，同名脚本在 `/workspace/lab-mod-event-kafka/`（无 `lab/` 前缀）。
+
+| 脚本 | 作用 |
+|------|------|
+| `lab/toxiproxy_cut_restore.sh` | 切断全部 toxiproxy 入口若干秒后自动恢复（默认 150s；短切示例 `35`） |
+| `lab/dialtest_fast.sh` | 快拨测（bgapi，避免 park 长时间 `NO_ANSWER`） |
+| `lab/dialtest_originate.sh` | loopback/park 拨测，产生 CHANNEL_CREATE / ANSWER / HANGUP* |
+
+```bash
+lab/toxiproxy_cut_restore.sh 35
+lab/dialtest_fast.sh 5
+# 或：lab/dialtest_originate.sh 2
+```
+
 ## 模拟完全断开（toxiproxy）
 
-禁用全部三个代理（客户端看到断开；单个 Kafka 进程保持运行）：
+优先用上一节的 `lab/toxiproxy_cut_restore.sh`。手工禁用全部三个代理（客户端看到断开；单个 Kafka 进程保持运行）：
 
 ```bash
 for p in kafka1 kafka2 kafka3; do

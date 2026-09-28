@@ -32,9 +32,9 @@
 
 | 用途 | 路径 |
 |------|------|
-| Compose / Phase1 | `/workspace/lab-mod-event-kafka/` |
-| 切流脚本 | `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh` |
-| 拨测 | `dialtest_originate.sh` / `dialtest_fast.sh` |
+| Compose / Phase1 | 仓库 `lab/`；共享机 `/workspace/lab-mod-event-kafka/` |
+| 切流脚本 | `lab/toxiproxy_cut_restore.sh`（共享机：`/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh`） |
+| 拨测 | `lab/dialtest_fast.sh`、`lab/dialtest_originate.sh`（共享机同名脚本在 `/workspace/lab-mod-event-kafka/`） |
 | FS 前缀/模块缓存 | `/workspace/lab-mod-event-kafka/fs/` |
 | Lab conf（含 TTL） | `/workspace/lab-mod-event-kafka/fs/conf/autoload_configs/event_kafka.conf.xml` |
 | 模块源码（TTL 版） | `/workspace/mod_event_kafka-fix/work/` + `include/` + `src/` |
@@ -46,7 +46,7 @@ Docker 命令统一用：`sg docker -c '...'`（用户在 `docker` 组，需通�
 
 ### 2.1 与本仓库 `lab/` 的对照
 
-上表是实验室机器上的绝对路径。本仓库 `lab/` 是其中一部分的同步副本。演练命令仍以绝对路径为准。
+演练主命令在仓库根目录用相对路径。上表里的 `/workspace/lab-mod-event-kafka/…` 是共享实验室机器上的绝对路径，仍然可用（脚本在该目录根下，不带 `lab/` 前缀）。本仓库 `lab/` 是其中一部分的同步副本。
 
 | 实验室机器 | 本仓库 |
 |------------|--------|
@@ -55,8 +55,9 @@ Docker 命令统一用：`sg docker -c '...'`（用户在 `docker` 组，需通�
 | `/workspace/lab-mod-event-kafka/README-PHASE2.md` | `lab/README-PHASE2.md` |
 | `/workspace/lab-mod-event-kafka/toxiproxy.json` | `lab/toxiproxy.json` |
 | `/workspace/lab-mod-event-kafka/dialtest_originate.sh` | `lab/dialtest_originate.sh` |
+| `/workspace/lab-mod-event-kafka/dialtest_fast.sh` | `lab/dialtest_fast.sh` |
+| `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh` | `lab/toxiproxy_cut_restore.sh` |
 | `/workspace/lab-mod-event-kafka/fs/conf/autoload_configs/event_kafka.conf.xml` | 参数对照见 `lab/event_kafka.fs.conf.xml`（仓库示例，不是容器里正在用的那份） |
-| `toxiproxy_cut_restore.sh`、`dialtest_fast.sh` | 尚未收入仓库 `lab/` |
 | `/workspace/mod_event_kafka-fix/`（含 `scripts/verify_event_ids.py`、`scripts/run_l16_abc.sh`、`reports/`） | 本仓库模块源码在根目录 `include/`、`src/`、`mod_event_kafka.cpp`；仓内验收脚本是 `scripts/verify_event_ids.py`（目录参数，见演练手册） |
 
 ## 3. 起栈（Phase1：Kafka + toxiproxy）
@@ -65,7 +66,8 @@ Docker 命令统一用：`sg docker -c '...'`（用户在 `docker` 组，需通�
 # 本机曾出现桥接互通失败：FORWARD 策略 DROP → UNRECORDED / connection refused
 sudo iptables-legacy -P FORWARD ACCEPT
 
-cd /workspace/lab-mod-event-kafka
+# 仓库内；共享机改为 cd /workspace/lab-mod-event-kafka
+cd lab
 sg docker -c 'docker compose up -d'
 sg docker -c 'docker compose ps'   # lab-kafka-1 应 healthy
 
@@ -95,7 +97,8 @@ sg docker -c "docker run --rm --network host $IMG \
 
 ```bash
 curl -fsS http://127.0.0.1:8474/proxies | head
-/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 2   # 2 秒切断再恢复
+lab/toxiproxy_cut_restore.sh 2   # 仓库根目录；2 秒切断再恢复
+# 共享机：/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 2
 ```
 
 ## 4. 起 FreeSWITCH + mod_event_kafka（Phase2）
@@ -149,7 +152,8 @@ sg docker -c 'docker exec lab-freeswitch env LD_LIBRARY_PATH=/usr/local/freeswit
 
 ```bash
 sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
-# 或：cd /workspace/lab-mod-event-kafka && sg docker -c 'docker compose down -v --remove-orphans'
+# 或：cd lab && sg docker -c 'docker compose down -v --remove-orphans'
+# 共享机：cd /workspace/lab-mod-event-kafka && sg docker -c 'docker compose down -v --remove-orphans'
 # 再单独 rm lab-freeswitch（compose 不含 FS）
 ```
 

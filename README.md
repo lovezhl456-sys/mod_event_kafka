@@ -18,7 +18,7 @@ FreeSWITCH Kafka 插件
 | [docs/TEST-PLAN.md](docs/TEST-PLAN.md) | 单元与实验室用例（含 L-03…L-15） |
 | [docs/STATUS.md](docs/STATUS.md) | 已跑结果与证据路径 |
 | [docs/DEPLOY-ROLLBACK.md](docs/DEPLOY-ROLLBACK.md) | 模块安装与回滚 |
-| [docs/KAFKA-DEPLOY.md](docs/KAFKA-DEPLOY.md) | 实验室 Kafka / toxiproxy 部署（绝对路径与仓内 `lab/` 对照） |
+| [docs/KAFKA-DEPLOY.md](docs/KAFKA-DEPLOY.md) | 实验室 Kafka / toxiproxy 部署（仓内 `lab/` 相对路径；共享机绝对路径仍可用） |
 | [docs/FAULT-SCENARIOS.md](docs/FAULT-SCENARIOS.md) | FS-01…FS-10 与 L-xx 映射；FS-01、FS-09 已挂切流命令 |
 | [docs/DRILL-RUNBOOK.md](docs/DRILL-RUNBOOK.md) | 短断 35s、超 TTL 150s、恢复后新呼叫的逐步演练 |
 

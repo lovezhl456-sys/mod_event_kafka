@@ -2,7 +2,7 @@
 
 > 目标：在本机 lab 上按固定步骤复现「短断自愈 / 超 TTL 过期 / 恢复后新呼叫」。  
 > 命令均来自本机已跑通路径。参数名、`x-fs-event-id`、状态字面量保持英文。  
-> 实验室绝对路径与仓库 `lab/` 的对照见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md) §2.1。本文步骤使用实验室绝对路径。
+> 本文步骤在仓库根目录执行，主命令用相对路径（`lab/toxiproxy_cut_restore.sh`、`lab/dialtest_fast.sh`、`lab/dialtest_originate.sh`）。共享实验室机器上仍可用绝对路径 `/workspace/lab-mod-event-kafka/…`（脚本在该目录根下，不带 `lab/` 前缀）。对照见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md) §2.1。
 
 对应故障场景：短断是 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-01；超 TTL 与恢复后新呼叫是 FS-09。
 
@@ -24,7 +24,8 @@ sg docker -c 'docker images | rg "apache/kafka|toxiproxy|lab-freeswitch"'
 ## 1. 起栈
 
 ```bash
-cd /workspace/lab-mod-event-kafka
+# 仓库内 compose 在 lab/；共享机目录为 /workspace/lab-mod-event-kafka
+cd lab
 sg docker -c 'docker compose up -d'
 sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 --create --if-not-exists \
@@ -49,8 +50,8 @@ sg docker -c 'docker exec lab-freeswitch env LD_LIBRARY_PATH=/usr/local/freeswit
 优先快拨测（避免 park 路径长时间 `NO_ANSWER` 阻塞）：
 
 ```bash
-/workspace/lab-mod-event-kafka/dialtest_fast.sh 5
-# 或：/workspace/lab-mod-event-kafka/dialtest_originate.sh 2
+lab/dialtest_fast.sh 5
+# 或：lab/dialtest_originate.sh 2
 ```
 
 验收要点：
@@ -65,10 +66,10 @@ sg docker -c 'docker exec lab-freeswitch env LD_LIBRARY_PATH=/usr/local/freeswit
 
 ```bash
 # 终端 A：切断全部入口 35 秒后自动恢复
-/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 35
+lab/toxiproxy_cut_restore.sh 35
 
 # 终端 B：切断期间拨测（与 A 重叠）
-/workspace/lab-mod-event-kafka/dialtest_fast.sh 10
+lab/dialtest_fast.sh 10
 ```
 
 恢复后等待若干秒让 worker 排空，再：
@@ -95,9 +96,9 @@ bash /workspace/mod_event_kafka-fix/scripts/run_l16_abc.sh
 对应 L-16b：pending 行超时 → `state=dead`，`last_error=expired_ttl`，**不上 topic**。
 
 ```bash
-/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh 150
+lab/toxiproxy_cut_restore.sh 150
 # 切断期间拨测注入一批 id
-/workspace/lab-mod-event-kafka/dialtest_fast.sh 10
+lab/dialtest_fast.sh 10
 ```
 
 恢复后：
@@ -110,7 +111,7 @@ bash /workspace/mod_event_kafka-fix/scripts/run_l16_abc.sh
 在 §4 恢复且代理已 `enabled=true` 后：
 
 ```bash
-/workspace/lab-mod-event-kafka/dialtest_fast.sh 10
+lab/dialtest_fast.sh 10
 # verify_event_ids.py → 新一批应 VERIFY_OK（历史：30/30）
 ```
 
@@ -138,7 +139,7 @@ sg docker -c 'docker run --rm --network host apache/kafka:3.8.1 \
 
 ```bash
 sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
-# 镜像与 /workspace/lab-mod-event-kafka、模块源码保留，下次回归再起
+# 镜像与 lab/（共享机为 /workspace/lab-mod-event-kafka）、模块源码保留，下次回归再起
 ```
 
 ## 8. 证据与对照
