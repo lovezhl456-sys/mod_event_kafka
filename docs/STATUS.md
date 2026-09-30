@@ -96,3 +96,4 @@
 - 强制 null key 的实验补丁没有用于 R1；走的是真实缺 `Channel-Call-UUID` 的路径
 - R3（`message.timestamp.*.max.ms`）未跑
 - 无对应 L-xx。未经生产验证。候选补丁 0001 = **NOT_VERIFIED**（仅作反面参考）
+- 复现方法与整体思路总览：[FS11-ERR87-REPRO-OVERVIEW.md](FS11-ERR87-REPRO-OVERVIEW.md)

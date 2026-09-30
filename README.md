@@ -17,6 +17,7 @@ FreeSWITCH Kafka 插件
 | [docs/RELIABILITY.md](docs/RELIABILITY.md) | 丢失、重复、顺序与过期边界 |
 | [docs/TEST-PLAN.md](docs/TEST-PLAN.md) | 单元与实验室用例（含 L-03…L-15） |
 | [docs/STATUS.md](docs/STATUS.md) | 已跑结果与证据路径 |
+| [docs/FS11-ERR87-REPRO-OVERVIEW.md](docs/FS11-ERR87-REPRO-OVERVIEW.md) | FS-11 / Err-87 复现方法与整体思路（broker **+87** `INVALID_RECORD`，不是 **-187**；旧无 outbox + FS 1.6.20 lab；未经生产验证） |
 | [docs/DEPLOY-ROLLBACK.md](docs/DEPLOY-ROLLBACK.md) | 模块安装与回滚 |
 | [docs/KAFKA-DEPLOY.md](docs/KAFKA-DEPLOY.md) | 实验室 Kafka / toxiproxy 部署（仓库内使用 `lab/` 相对路径；共享机上的绝对路径仍可用） |
 | [docs/FAULT-SCENARIOS.md](docs/FAULT-SCENARIOS.md) | FS-01…FS-11 与 L-xx 的映射；FS-01、FS-09 已附断流命令；FS-11 为 broker **+87** `INVALID_RECORD`，已 empirically（旧无 outbox + FS 1.10.x lab；不是 FS 1.6，不是 **-187**） |
