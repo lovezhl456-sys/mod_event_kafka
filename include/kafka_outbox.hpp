@@ -48,9 +48,9 @@ class Outbox {
                  std::string& err);
   bool requeue_in_flight(std::string& err);
 
-  // (now_ms - created_at_ms) > ttl_ms 的 pending 行变为 dead / expired_ttl。
-  // ttl_ms <= 0 时关闭过期并返回 0。返回更新的行数，出错返回 -1。
-  // in-flight 行留给 ACK 或重试。
+  // 将满足 (now_ms - created_at_ms) > ttl_ms 的 pending 行置为 dead / expired_ttl。
+  // ttl_ms <= 0 时不做过期处理，返回 0。成功时返回更新的行数，出错返回 -1。
+  // in-flight 行不在此处理，交由 ACK 或重试路径。
   int expire_ttl(int64_t now_ms, int64_t ttl_ms, std::string& err);
   bool get(const std::string& event_id, OutboxRecord& out) const;
 

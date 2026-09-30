@@ -78,7 +78,7 @@ bool query_counts(sqlite3* db, const char* where_sql, int64_t& rows, int64_t& by
 }
 
 // 已过期的死信行不得阻塞新插入。pending、in-flight 以及其他 dead 行
-// （永久性错误）予以保留。若新负载在这些行之间仍放不下，则返回 false。
+// （永久性错误）一律保留。若保留这些行后仍容不下新负载，则返回 false。
 bool admit_insert(sqlite3* db, int64_t max_rows, int64_t max_bytes, int64_t extra_bytes,
                   std::string& err) {
   int64_t rows = 0;

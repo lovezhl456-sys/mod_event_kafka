@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Phase2 实验室拨测 — 经 loopback 产生 CHANNEL_CREATE / ANSWER / HANGUP*。
-# 需要：docker 容器 lab-freeswitch（宿主机网络），以及 toxiproxy 上的 Kafka 已启动。
+# Phase2 实验室拨测：经 loopback 产生 CHANNEL_CREATE / ANSWER / HANGUP* 事件。
+# 前提：docker 容器 lab-freeswitch（宿主机网络）已运行，且经 toxiproxy 暴露的 Kafka 已启动。
 #
-# 示例（仓库根目录）：
+# 示例（在仓库根目录执行）：
 #   lab/dialtest_originate.sh 2
-# 共享机绝对路径仍可用：
+# 共享机上的绝对路径仍可用：
 #   /workspace/lab-mod-event-kafka/dialtest_originate.sh 2
 #
 # 实际使用的 fs_cli 命令：

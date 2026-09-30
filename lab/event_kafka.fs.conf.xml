@@ -1,25 +1,25 @@
 <configuration name="event_kafka.conf" description="Kafka Event Configuration">
 	<settings>
-		<!-- Phase2 实验室：仅 toxiproxy — 不要指向生产 Kafka -->
+		<!-- Phase2 实验室：只走 toxiproxy，不要指向生产 Kafka -->
 		<param name="bootstrap-servers" value="127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094"/>
 		<param name="topic-prefix" value=""/>
-		<param name="topic" value="fs_events" />  <!-- 设置 topic-prefix 或 topic 之一；若两者都设置，则 topic 优先 -->
+		<param name="topic" value="fs_events" />  <!-- topic-prefix 与 topic 设置其一即可；两者都设置时以 topic 为准 -->
 		<param name="username" value="" />
 		<param name="password" value="" />
 		<param name="buffer-size" value="100000" />
 		<param name="compression" value="snappy"/>
-		<!-- 拨测 originate：CHANNEL_* 可限制事件量；空 = 全部事件（ALL） -->
+		<!-- 拨测 originate：只订阅 CHANNEL_* 可限制事件量；留空 = 全部事件（ALL） -->
 		<param name="event-filter" value="SWITCH_EVENT_CHANNEL_CREATE,SWITCH_EVENT_CHANNEL_ANSWER,SWITCH_EVENT_CHANNEL_HANGUP,SWITCH_EVENT_CHANNEL_HANGUP_COMPLETE"/>
-		<!-- 增量（可选）的可靠性 / 安全配置 -->
+		<!-- 新增的可选配置：可靠性 / 安全 -->
 		<param name="outbox-path" value="/usr/local/freeswitch/var/lib/freeswitch/db/event_kafka_outbox.db"/>
 		<param name="mem-queue-max" value="10000"/>
 		<param name="outbox-max-rows" value="100000"/>
-		<!-- 超过此时长的 pending 行会被标为 dead（expired_ttl）且不再投递。
-		     0 表示关闭。默认 120000（2 分钟）。TTL 以内的中断在 Kafka 恢复后仍会排空；无需 reload。 -->
+		<!-- 存在时间超过该值（毫秒）的 pending 行会被标为 dead（expired_ttl），不再投递。
+		     0 表示关闭。默认 120000（2 分钟）。时长在 TTL 以内的中断，Kafka 恢复后仍会排空，无需 reload。 -->
 		<param name="outbox-ttl-ms" value="120000"/>
 		<param name="message-timeout-ms" value="30000"/>
 		<param name="enable-idempotence" value="1"/>
-		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL；空 = 自动 -->
+		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL；留空 = 自动选择 -->
 		<param name="ssl-ca-location" value=""/>
 	</settings>
  </configuration>

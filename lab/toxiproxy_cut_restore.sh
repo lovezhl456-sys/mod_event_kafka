@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# 实验室辅助：切断全部 toxiproxy Kafka 前端 DURATION 秒，然后恢复。
-# outbox TTL 测试：DURATION 须大于 outbox-ttl-ms（默认 120000 → 切断 >120s）。
+# 实验室辅助脚本：断开全部 toxiproxy Kafka 前端 DURATION 秒，然后恢复。
+# outbox TTL 测试：DURATION 须大于 outbox-ttl-ms（默认 120000，即断开 >120s）。
 # 短断自愈回归（L-02）：约 35s（小于 TTL）。
 #
-# 用法（仓库根目录；也可在脚本所在目录用 ./toxiproxy_cut_restore.sh）：
+# 用法（在仓库根目录执行；也可在脚本所在目录执行 ./toxiproxy_cut_restore.sh）：
 #   lab/toxiproxy_cut_restore.sh                 # 默认 150s（>120s TTL）
-#   lab/toxiproxy_cut_restore.sh 35              # 短切
+#   lab/toxiproxy_cut_restore.sh 35              # 短断
 #   lab/toxiproxy_cut_restore.sh 150 kafka1,kafka2,kafka3
-# 共享机绝对路径仍可用：
+# 共享机上的绝对路径仍可用：
 #   /workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh
 #
 # 环境变量：
