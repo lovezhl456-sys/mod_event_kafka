@@ -180,6 +180,8 @@ FS-01、FS-09 的「如何注入」已附上实验室断流命令（`toxiproxy_c
 | **+87** | `INVALID_RECORD` | Kafka **broker** 校验拒收 | FS-11 在 FS 1.6.20 上看到的就是这个码。实验室文本是 `Broker: Broker failed to validate record`（`mod_event_kafka.cpp:197`，670 行）。生产日志里的 `Err-87`、旧库的 `Err-87?` 也是这个 **正** 错误码 |
 | **-187** | `ALL_BROKERS_DOWN` | librdkafka **本地**错误（断连/断流） | FS-01、FS-09 短断与超 TTL 断连已覆盖的一类。不是 Err-87。FS 1.6.20 的 `reproduce.sh` 不是这条，不得拿断流证据当作 FS-11 PASS |
 
+FS-11 的整体思路与复现方法总览见 [FS11-ERR87-REPRO-OVERVIEW.md](FS11-ERR87-REPRO-OVERVIEW.md)。
+
 ---
 
 ## TEST-PLAN 中已规划但未完整跑过的 L-xx

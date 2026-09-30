@@ -96,3 +96,4 @@
 - **对照（保留，不删除）：** `reports/fs11-err87-20260930-154534/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-20260930-154534/`），**旧无 outbox + FS 1.10.x lab**。镜像 `lab-freeswitch:1.10.12-kafka`，二进制 `FreeSWITCH version: 1.10.7-dev+git~20210825T173719Z~dd2411336f~64bit`（git `dd24113`）。`RESULT.txt` 时间 2026-09-30 15:48:11 +0800。R1 窗口 482 行 `INVALID_RECORD`；R2 delivery-fail = 0。独立冒烟记下 `DR_FAIL err=87 ... key_len=0`，以及 compact+NULL → err=87、delete+NULL → OK、compact+非空 key → OK。目录里的 `fs16-blocker.txt` 记录的是当时 Jessie 运行时镜像为何编不过，该叙述已被上面的 1.6.20 源码构建取代。这一轮是 1.6 被挡住时的较早实验室通过，不代替 1.6.20 主证据
 - 1.6.20 这一轮走的是真实缺 `Channel-Call-UUID` 的路径（模块说明）。R3（`message.timestamp.*.max.ms`）未跑
 - 无对应 L-xx。未经生产验证。候选补丁 0001 = **NOT_VERIFIED**（仅作反面参考）
+- 复现方法与整体思路总览：[FS11-ERR87-REPRO-OVERVIEW.md](FS11-ERR87-REPRO-OVERVIEW.md)
