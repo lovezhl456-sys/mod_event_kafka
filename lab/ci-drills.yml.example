@@ -1,0 +1,60 @@
+name: Core and drill acceptance
+on:
+  pull_request:
+  push:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ pkg-config librdkafka-dev libsqlite3-dev
+      - name: Build instrumented core and tests
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j2
+      - name: Unit and evidence-negative tests
+        run: ctest --test-dir build --output-on-failure
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {fault: cut, compression: snappy, seconds: 3, ttl: 120000}
+          - {fault: cut, compression: none, seconds: 3, ttl: 120000}
+          - {fault: cut, compression: snappy, seconds: 6, ttl: 2000}
+          - {fault: blackhole, compression: snappy, seconds: 3, ttl: 120000}
+          - {fault: latency, compression: snappy, seconds: 3, ttl: 120000}
+          - {fault: rolling, compression: snappy, seconds: 1, ttl: 120000}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ pkg-config librdkafka-dev libsqlite3-dev
+      - name: Build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j2
+      - name: Start isolated three-broker cluster
+        run: docker compose -p event-kafka-cluster -f lab/cluster-compose.yml up -d --wait --wait-timeout 240
+      - name: Recover without restarting sender
+        run: >-
+          python3 lab/run_recovery_drill.py
+          --fault '${{ matrix.fault }}' --compression '${{ matrix.compression }}'
+          --seconds '${{ matrix.seconds }}' --ttl-ms '${{ matrix.ttl }}'
+          --message-timeout-ms 1000 --post-seconds 5
+      - name: Eight record-validation controls
+        if: matrix.fault == 'rolling'
+        run: python3 lab/run_record_matrix.py
+      - name: Capture broker logs
+        if: always()
+        run: mkdir -p reports && docker compose -p event-kafka-cluster -f lab/cluster-compose.yml logs --no-color > reports/brokers.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drill-${{ matrix.fault }}-${{ matrix.compression }}-${{ matrix.ttl }}
+          path: reports/
+      - name: Stop this cluster (keep volumes)
+        if: always()
+        run: docker compose -p event-kafka-cluster -f lab/cluster-compose.yml down

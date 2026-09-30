@@ -1,169 +1,72 @@
-# TEST-PLAN — mod_event_kafka Outbox 可靠性
+# 测试与验收
 
-状态图例：`PLANNED` | `CODED` | `PASS` | `FAIL` | `BLOCKED` | `N/A`  
-**候选补丁 `0001-kafka-restart-resilience.patch` 仅作反面参考，绝不得据此把任何一行标为 PASS。**
+## 运行级别
 
-契约来源：`docs/DESIGN.md`。实验室所需的 FS + 3 broker + 故障代理依赖 Docker/Podman（本机没有），或由安装软件大师提供的主机。
+| 级别 | 命令/对象 | 覆盖与限制 |
+|---|---|---|
+| 单元 | `ctest --test-dir build --output-on-failure` | 队列深拷贝/并发、outbox 容量与状态、TTL、停止、验收工具反例；不代表 FS 或云环境通过 |
+| 候选 core 集成 | `lab/run_recovery_drill.py` | 真实 Kafka、发送进程不重启、独立消费、最终 outbox |
+| 记录协议探针 | `lab/run_record_matrix.py` | 记录校验返回码和策略/key/压缩对照；没有 FS/outbox |
+| FS 联调 / 云发布 | [覆盖矩阵](FAULT-SCENARIOS.md) 的待验证项 | 要求对应二进制、环境、故障及恢复时间线 |
 
----
+CMake 的 `ENABLE_SANITIZERS=ON` 同时编译 core 和测试为 ASan/UBSan。原先只给测试可执行文件加标志不足以覆盖 core。ASan/UBSan 也不能代替 TSan 竞态检查。
 
-## 0. 优先补齐的单元测试缺口（已提出）
-
-| ID | 结果 | 备注 |
-|----|--------|-------|
-| U-OWN-01 队列深拷贝 | PASS | `try_push` 之后修改调用方数据；弹出的内容不变 |
-| U-OWN-02 outbox 深拷贝 | PASS | `insert_pending` 之后修改记录；取出的内容不变 |
-| U-DSK-03 字节上限 | PASS | `max_bytes` 触发拒绝；pending 行完好 |
-| U-Q-02 并发入队 | PASS | 8 线程 × 40 次写入容量为 64 的队列；pushed+rejected 计数精确 |
-| U-UNL-01/02 安全卸载 | PASS | `notify_stop` 解除阻塞；`close`/`stop` 可重复调用；停止后入队被拒绝；outbox 保留行 |
-
-命令：`cmake --build build && ctest --test-dir build --output-on-failure`（二进制以 ASan+UBSan 构建）。
-
-## 1. 单元测试矩阵（不依赖 FreeSWITCH）
-
-目标二进制：`build/test_outbox`（以及今后的 `tests/test_*.cpp`）。在 ASan+UBSan 下运行（见 §2）。
-
-| ID | 范围 | 场景 | 期望 | 状态 |
-|----|------|----------|--------|--------|
-| U-OWN-01 | 所有权 | `QueuedEvent` 持有 payload+key+event_id 的深拷贝；`try_push` 之后修改调用方缓冲区 | 队列项不变 | PASS |
-| U-OWN-02 | 所有权 | produce 路径使用 `RD_KAFKA_MSG_F_COPY`（或等效方式）；ACK 之前 outbox 行仍是事实来源（SoT） | 无 MSG_F_FREE UAF；in_flight 期间 DB 中的 payload 仍可读 | PASS |
-| U-OWN-03 | 所有权 | worker/API 层面不存在分离的重试线程 | 静态检查/grep：produce/重试路径中没有 `std::thread(...).detach` | PLANNED |
-| U-Q-01 | 队列上限 | `BoundedQueue(N)` 接受 N 条，拒绝第 N+1 条 | `try_push` 返回 false；`rejected()==1` | CODED |
-| U-Q-02 | 队列上限 | 在接近容量时并发 push/pop | 计数不丢；仅在真正溢出时 rejected 才递增 | PASS |
-| U-Q-03 | 队列上限 | 在空队列上 `pop_wait_for_ms` + `notify_stop` | 返回 nullopt；不挂起 | PLANNED |
-| U-RTY-01 | 重试 | `mark_retry` 置为 `pending`，递增 `attempts`，`next_attempt_at_ms` 设在将来 | `fetch_due(now)` 为空；过了 next_ms 之后到点 | CODED |
-| U-RTY-02 | 重试 | 指数退避（加抖动）的调度辅助函数 | 间隔递增；抖动落在文档规定的范围内 | PLANNED |
-| U-RTY-03 | 重试 | 瞬时类错误保留该行；永久类 → `dead` | state/`last_error` 正确；dead 行不引发紧循环 | CODED（dead）/ PLANNED（错误分类映射） |
-| U-ACK-01 | ACK | `mark_in_flight` → `mark_acked` 删除该行 | stats 中 in_flight/pending 下降；行已消失 | CODED |
-| U-ACK-02 | ACK | ACK 是事务性的：在提交完成前重新打开，模拟 DELETE 中途崩溃 | 至少一次：行要么仍在、要么已消失；绝不出现中间状态 | PLANNED |
-| U-ACK-03 | ACK | ACK 之后、崩溃窗口内的重复投递 | 消费端去重键 = 消息头 `x-fs-event-id`；正文 JSON 不变 | PLANNED（文档 + 辅助逻辑） |
-| U-DSK-01 | 磁盘失败 | `outbox-path` 不可写 / 打开失败 | `open` 返回 false 并带回 err；入队路径以指标/日志拒绝（不静默） | PLANNED |
-| U-DSK-02 | 磁盘失败 | `max_rows` 耗尽 | `insert_pending` 返回 false；走 `rejected_disk_full` 路径 | CODED（行数） |
-| U-DSK-03 | 磁盘失败 | `max_bytes` 耗尽 | 插入被拒绝；已有行完好 | PASS |
-| U-DSK-04 | 磁盘失败 | INSERT/UPDATE 时发生 SQLite I/O 错误 | 错误被上报；不崩溃；行不会被误 ACK | PLANNED |
-| U-REC-01 | 恢复 | 重新打开后数据仍在 | dead/pending 行在进程重启后仍在 | CODED |
-| U-REC-02 | 恢复 | 启动/重建时执行 `requeue_in_flight` | in_flight → pending；不残留孤立的 in_flight | CODED |
-| U-REC-03 | 恢复 | 同一 `call_uuid` 按 `created_at_ms` FIFO | fetch_due 顺序与该通话内的入队顺序一致 | CODED |
-| U-REC-04 | 恢复 | 允许跨通话乱序 | 两个 call_uuid 交错即可 | PLANNED |
-| U-UNL-01 | 卸载 | 关闭顺序：停止入队 → 内存队列写入 outbox → flush/poll 超时 → join | join 不挂起；未 ACK 行留在磁盘 | PASS |
-| U-UNL-02 | 卸载 | 未 open 时重复 close / destroy | 不崩溃（ASan 无报告） | PASS |
-| U-ID-01 | event_id | `make_event_id` 生成的 UUIDv4 格式，以及 N≥10k 时的唯一性 | 正则匹配 + 集合大小 == N | PLANNED |
-
-### 当前 `tests/test_outbox.cpp` 的覆盖缺口
-
-已覆盖：U-Q-01、U-RTY-01、U-ACK-01、U-DSK-02（行数）、U-REC-01/02/03、dead 标记。  
-**宣称单元测试完成之前仍缺：** U-OWN-*、U-Q-02/03、U-RTY-02、U-ACK-02/03、U-DSK-01/03/04、U-REC-04、U-UNL-*、U-ID-01、字节上限、并发。
-
----
-
-## 2. ASan / UBSan 检查清单
-
-构建（`CMakeLists.txt` 已为 `test_outbox` 配好）：
+Linux Docker 构建（无需 FS 头文件）：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+docker build -f lab/Dockerfile.tests -t event-kafka-tests .
+docker run --rm -v "$PWD:/src" event-kafka-tests
 ```
 
-| 检查 | 方法 | 通过标准 | 状态 |
-|-------|-----|---------------|--------|
-| A-01 单元套件上的 AddressSanitizer | 以 `-fsanitize=address,undefined` 编译并链接 | 退出码 0；无 ASan 报告 | CODED（编译标志）/ 运行结果见 reports |
-| A-02 produce/ACK 路径上的释放后使用 | 持有 payload 视图时对 insert→in_flight→ack 加压 | 无 heap-use-after-free | PLANNED |
-| A-03 双重释放 / MSG_F_FREE 回归 | grep + 反向测试：COPY 路径持有缓冲区所有权 | rdkafka 不会释放 outbox 持有的 blob | PLANNED |
-| A-04 线程生命周期 | 停止 worker+poll；join；销毁 Outbox | 无 stack-use-after-return / 线程泄漏 | PLANNED |
-| A-05 UBSan 整数/空指针 | 全套件 | 无运行时错误 | 与 A-01 一并检查 |
-| A-06 LeakSanitizer（可选 ASAN_OPTIONS=detect_leaks=1） | 套件 + 反复重新打开 | outbox/队列无确定性泄漏 | PLANNED |
+不要与其他平台共用同一个 `build/`；切换平台使用新的 CMake 构建目录。
 
-CI/本机环境变量：
+## 验收器输入
 
 ```bash
-export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1
-export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+python3 scripts/verify_event_ids.py reports/RUN --require-recovery
+# 本轮允许过期时，明确给出运行配置中的 TTL
+python3 scripts/verify_event_ids.py reports/RUN --ttl-ms 120000 --require-recovery
+# 要验证通话顺序时额外加 --check-order
 ```
 
-**在 FreeSWITCH 中加载的模块 `.so`** 的消毒器构建仅用于实验室（需要匹配的 FS/库版本）。在实验室主机上实际跑过之前，不得宣称已加载模块的 ASan 结果为 PASS。
+| 文件 | 格式与用途 |
+|---|---|
+| `injected_ids.txt` | 必需，非空、每行唯一 ID；记录每次尝试，包括明确拒绝的事件 |
+| `consumed_ids.txt` | 必需，每次消费一行，保留重复，不能预先去重 |
+| `outbox_final.csv` | 必需，最终单次快照；列 `event_id,state,last_error,created_at_ms,updated_at_ms`；排空时保留表头 |
+| `rejected_ids.txt` | 可选；只有显式 `--allow-rejected` 才接受；不得与已消费/死信重叠 |
+| `expected_dead_ids.txt` | 可选；故障计划指定的永久死信 ID，必须与实际 dead 集合完全相等 |
+| `injected_events.csv` | 顺序/自愈检查必需；列 `event_id,call_uuid,sequence,phase`；phase 为 baseline/during/recovery；sequence 为每通话唯一注入序号 |
+| `consumed_records.csv` | 自愈检查必需；列 `event_id,partition,offset,observed_at_ms`；保留每次消费，必须与原始消费 ID 多重集合一致 |
+| `recovery.json` | 自愈检查必需，格式如下；来自控制器和发送进程的实际记录 |
 
----
+```json
+{
+  "sender_before": {"pid": 123, "start_id": "unique-process-start-id"},
+  "sender_after": {"pid": 123, "start_id": "unique-process-start-id"},
+  "reload_count": 0,
+  "fault_start_ms": 1000,
+  "fault_end_ms": 36000,
+  "fault_exit_code": 0
+}
+```
 
-## 3. 验收实验室 — FS + 3 节点 Kafka + 故障代理
+- 注入集合必须在生产/入队侧独立记录，不能从消费结果或最终 DB 反推。
+- 注入集合必须等于互不重叠的消费、拒绝、合法过期、预期永久死信集合之和；出现意外 ID、未解释缺失、pending/in_flight 都失败。
+- `dead/expired_ttl` 必须有 `updated_at_ms-created_at_ms > --ttl-ms > 0` 的证据；不能仅把缺失 ID 写进免责列表。已回收的过期行需提前保留独立终态证据并扩展验证器，当前缺证会失败。
+- 顺序依据独立注入序号，不用毫秒时间戳加 event_id 排序，也不用最终已排空的快照推断顺序。
+- 自愈还要求故障前/中/后均有注入，基线 ID 在故障开始前已消费，恢复阶段新 ID 在故障结束后实际消费，发送进程身份不变、reload=0、故障工具成功恢复。
+- 消费重复是至少一次语义的可观察结果，报告数量，不自动失败。ACK 不明确后“消费且过期”的交集会失败，需保留证据分析，不能静默豁免。
+- 未请求的顺序/自愈检查会显示 `NOT_CHECKED`。`VERIFY_OK` 不意味着覆盖整个故障矩阵。
 
-实验室 compose 位于 `/workspace/lab-mod-event-kafka/`（有 Docker）。FreeSWITCH 主机仍属可选 / Phase-2。运行时负责人：安装软件大师。
+退出码：0 已请求的检查通过；1 集合/终态/自愈失败；2 仅顺序失败；3 产物缺失或损坏。
 
-### 3.1 拓扑（具备条件时）
+## CI 接入
 
-- FreeSWITCH + 打过补丁的 `mod_event_kafka`（即 outbox 设计，而非候选补丁）
-- 3 个 Kafka broker（KRaft 或 ZK）
-- bootstrap 前置 Toxiproxy（或等效工具）
-- 记录 Kafka 消息头 `x-fs-event-id`（以及可选的 key=`Channel-Call-UUID`）的消费者
+[ci-drills.yml.example](../lab/ci-drills.yml.example) 是不自动执行的模板，包含单元和六组真实 Kafka 演练。具备 workflow 写权限的维护者可审阅后放入 `.github/workflows/drills.yml`；当前 PR 没有启用新的远程 CI。旧 workflow 保留当前 fork 的既有注释，已比较解析后的 YAML，执行逻辑与目标仓库完全一致。
 
-### 3.2 场景（概要）
+## 仍缺少的验证
 
-| ID | 故障 | 期望 | 状态 |
-|----|-------|--------|--------|
-| L-01 | 正常路径 | 注入的每个 event_id 在 topic 中各出现一次 | PLANNED |
-| L-02 | 有流量时杀掉全部 broker 30 秒后重启；**不** `reload mod_event_kafka` | pending outbox 排空；已发送集合 ⊆ 已注入集合；缺失仅限 COMMIT 前窗口（DESIGN §可靠性边界 1） | **PASS**（2026-09-25，稳定测试架 `reports/l02-l07-run1790313218`，不是 FS `.so`） |
-| L-03 | produce 期间 Toxiproxy reset-peer / 延迟 | 重试；最终 ACK；重复只出现在“ACK 后崩溃”窗口内 → 按 event_id 去重 | PLANNED |
-| L-04 | 单个 broker 宕机（ISR 仍正常） | 无持续拒绝；produce_ok 持续增长 | PLANNED |
-| L-05 | `mem-queue-max` 压力 | `rejected_mem_full` + WARNING；媒体线程不被阻塞 | PLANNED |
-| L-06 | 中断期间卸载/重新加载模块 | 磁盘 outbox 保留；reload 且 broker 恢复后排空完成 | PLANNED |
-| L-07 | 自愈门禁 | L-02 之后对比 **reload 之前** 与 **reload 之后**；仅当无需 reload 即已自愈时才判 PASS | **PASS**（与 L-02 同一次运行；reload 前 acked=60，verify 退出码 0） |
+SQLite 真 I/O 故障、fatal 重建竞态、真实 FS 卸载/SIGKILL、ACK 崩溃窗口、媒体线程延迟和旧库兼容性，不能由当前单元测试推断通过。详细编号统一在 [覆盖矩阵](FAULT-SCENARIOS.md)，结果统一在 [STATUS](STATUS.md)。
 
-| L-08 | 滚动重启（每次一个 broker，所有 bootstrap 地址都经过代理） | 已提交的 outbox 行无永久丢失；积压排空 | PLANNED |
-| L-09 | Broker SIGKILL / 进程崩溃 | 与瞬时故障相同；outbox 保留；自动重试 | PLANNED |
-| L-10 | 所有被代理的 broker 端口上发生 TCP RST | 保留 + 退避；链路恢复后无需 reload 即可排空 | PLANNED |
-| L-11 | 网络黑洞（全部丢包）> `message-timeout-ms` | 行保持 pending/重试；恢复后**新**事件仍能入队并发送；旧的到点行排空 | PLANNED |
-| L-12 | 延迟 / 反复抖动（toxiproxy toxics） | 线程/内存稳定；仅在达到容量时拒绝；不阻塞媒体线程 | PLANNED |
-| L-13 | 磁盘满 / outbox INSERT 失败 | 拒绝 + 告警指标；不静默丢弃；不崩溃 | PLANNED |
-| L-14 | 中断期间 FS / 模块进程被 SIGKILL；重启模块/FS | 未 ACK 的 outbox 行以**相同** event_id 重放 | PLANNED |
-| L-15 | 认证/ACL/永久性 produce 错误 | `state`=`dead` + 证据；无紧重试循环 | PLANNED |
-
-**通过规则：** 比对 event_id 集合（injected / rejected / consumed_dedup / outbox 终态）。绝不能仅凭“没有错误日志”判定通过。
-
-
-### 3.3 Event ID 集合核对方法
-
-稳定 ID 是入队时生成的 UUIDv4，存入 outbox，并通过 Kafka 消息头 **`x-fs-event-id`** 随消息发送（正文 JSON 不变）。
-
-**产物（实验室运行时写入 `reports/<run-id>/`）：**
-
-| 文件 | 内容 |
-|------|---------|
-| `injected_ids.txt` | 每行一个 event_id，按注入顺序排列 |
-| `outbox_snapshot.csv` | 各检查点的 `event_id,state,attempts,call_uuid,created_at_ms`（T0 注入完成 / T1 broker 宕机 / T2 broker 恢复并排空 / T3 卸载） |
-| `consumed_ids.txt` | 消费者读到的 event_id（消息头 `x-fs-event-id`），每行一个，有重复时保留重复 |
-| `consumed_ids_dedup.txt` | 去重后的集合 |
-| `metrics.json` | DESIGN 指标列表中的计数器 |
-
-**检查项（脚本：`scripts/verify_event_ids.py`）：**
-
-1. **完整性（自愈后的至少一次）：**  
-   `set(injected) - set(consumed_dedup) == ∅`  
-   *例外：* 从未到达 outbox COMMIT 的 ID（任何有意的提交前丢失都要写明条数和原因）。
-2. **容量受限时无静默丢弃：** 若拒绝数 > 0，每个被拒绝的 ID 都必须记录在 `rejected_ids.txt` 日志中，不能只体现在指标里。
-3. **去重：** 报告 `len(consumed) - len(consumed_dedup)`；若按 `x-fs-event-id` 做完消费端去重后仍有重复，则判 FAIL。
-4. **顺序（同一通话）：** 对每个 `call_uuid`，`consumed_dedup` 中 event_id 的相对顺序须与 outbox 快照中的 `created_at_ms` 顺序一致（跨通话不做断言）。
-5. **Outbox 终态：** 排空之后，成功 ID 的 `pending+in_flight == 0`；`dead` 只应出现在注入了永久性错误的场景中。
-6. **自愈：** L-07 要求 **reload 之前** 采集的消费数据即通过检查 1–5。
-
-退出码：`0` 全部断言通过；`1` 集合不匹配；`2` 顺序检查失败；`3` 产物损坏。
-
----
-
-## 4. 本机当前能跑的与受阻的部分
-
-| 工作 | 位置 | 状态 |
-|------|-------|--------|
-| Outbox/队列单元测试 + ASan/UBSan 标志 | 本机 | 可运行（`ctest`）；扩展矩阵仍为 PLANNED |
-| Kafka×3 + toxiproxy 实验室 | `/workspace/lab-mod-event-kafka/` | READY（compose）；FS 为可选，属于 Phase-2 |
-| 完整 FS+Kafka+代理 | 实验室 + FS 主机 | PENDING，等待安装软件大师提供 FS 二进制/路径 |
-| 把候选 poll/重建补丁视为已验证 | — | **禁止**（DESIGN：反面参考） |
-
----
-
-## 5. “可以提 PR”的退出标准
-
-1. OWN/Q/RTY/ACK/DSK/REC/UNL 各行单元矩阵要么 PASS，要么经架构师签字明确豁免。  
-2. 单元套件上 A-01 无报告。  
-3. 实验室上 L-02 + L-07 PASS，且 `verify_event_ids.py` 退出码为 0（产物在 `reports/` 下）。  
-4. 报告须把每个跳过的场景标为 `BLOCKED`/`N/A`，不得悄悄跳过。
+PR 可以提交工具或文档改进，但描述必须列明未跑项；发布可靠性结论必须有对应层级的真实证据。历史候选补丁 `0001` 一直是 NOT_VERIFIED，不作为验收依据。

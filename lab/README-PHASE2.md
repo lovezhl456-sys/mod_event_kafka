@@ -1,31 +1,23 @@
-# Phase2 — FreeSWITCH + mod_event_kafka（实验室）
+# 真实 FreeSWITCH 联调
 
-## 运行时
-- 镜像：`lab-freeswitch:1.10.12-kafka`（在 bookworm 上从源码构建的 FS 1.10.12-release）
-- 容器：`lab-freeswitch`（`--network host`）
-- Kafka bootstrap（仅经 toxiproxy）：`127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094`
-- topic：`fs_events`
-- 模块：`/usr/local/freeswitch/lib/freeswitch/mod/mod_event_kafka.so`
-- 配置：`/usr/local/freeswitch/etc/freeswitch/autoload_configs/event_kafka.conf.xml`
-- buffer-size：`100000`（XML 键 `buffer-size`）
-- Kafka 消息头：`x-fs-event-id`
+候选 core 演练不加载 FS 模块。要验证 FS 回调、卸载和旧模块缺陷，需要额外提供与目标 ABI 一致的 FS、头文件和 `.so`；本仓库没有交付可直接拉取的 FS 1.6.20 构建镜像。
 
-## 重启 FS
-```bash
-sg docker -c 'docker rm -f lab-freeswitch'
-sg docker -c 'docker run -d --name lab-freeswitch --network host lab-freeswitch:1.10.12-kafka \
-  bash -c "export LD_LIBRARY_PATH=/usr/local/freeswitch/lib:/usr/local/lib; \
-    /usr/local/freeswitch/bin/freeswitch -nonat -nf -nc -nosql -rp"'
-```
+## 前置证据
 
-## 拨测
-```bash
-# 在仓库根目录执行；共享机上：/workspace/lab-mod-event-kafka/dialtest_originate.sh 2
-lab/dialtest_originate.sh 2
-# 实际使用的 originate：
-# originate {ignore_early_media=true,origination_caller_id_number=dialtest}loopback/park/default &park()
-```
+- 实际 FS 版本、实际加载的 librdkafka 版本和模块 hash；不要只记录镜像标签。
+- 模块是否为旧无 outbox 实现，或当前 outbox 实现。
+- topic 配置、事件过滤器、压缩、容量、TTL，以及实验室 bootstrap。
+- FS 进程 PID + 启动身份，模块初始化次数；不把 reload 后正常称为自动恢复。
 
-## 说明
-- 本机没有 dsh/nvm，直接使用 apt + docker。
-- 不要把 bootstrap 指向生产/云端 Kafka。
+历史路径、镜像名与证据目录见 [STATUS](../docs/STATUS.md)，不代表当前环境已安装。
+
+## 执行顺序
+
+1. 在专用 FS 实验室加载模块，确认基线事件被 Kafka 消费。
+2. 使用 [演练手册](../docs/DRILL-RUNBOOK.md) 的代理工具注入故障，持续产生事件。
+3. 故障恢复后继续产生新事件，保持 FS 和模块实例不变。
+4. 保存独立注入集合、原始消费记录及最终 outbox，按 [验收格式](../docs/TEST-PLAN.md) 核对。
+
+当前 FS glue 没有持续导出成功入队的 event_id 清单，完整自动验收还需要测试观测点或独立事件映射。**不能从已消费列表或最终 outbox 反推出 injected_ids，再宣称无丢失。** core harness 在 enqueue 返回时记录 ID，因此不依赖消费结果构造期望集合。
+
+`dialtest_originate.sh` / `dialtest_fast.sh` 是历史 loopback/park 辅助脚本，使用前核对其中的容器与 fs_cli 路径。park 不保证产生 ANSWER 事件。仅用于专用实验室，不能直接对生产容器执行。

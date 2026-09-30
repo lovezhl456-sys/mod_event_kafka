@@ -1,30 +1,26 @@
 # 可靠性边界
 
-## 保证（设计目标）
-- 对已成功提交到 SQLite outbox、且未被 `outbox-ttl-ms` 过期的事件，提供**至少一次**投递。
-- 稳定的 **event_id**（UUIDv4）在入队时分配；重试 produce 时复用同一 id（流水线附加消息头时即 `x-fs-event-id`）。
-- 同一通话内的顺序：outbox 的 `fetch_due` 先按 `call_uuid`、再按 `created_at_ms` 排序。
+## 持久化与丢失
 
-## 丢失窗口
-- FS 回调返回**之后**、outbox `INSERT` 提交**之前**崩溃 → 事件可能丢失（此时只在内存队列中）。
-- 容量耗尽（内存或磁盘）→ **显式拒绝** + 指标/日志；绝不静默丢弃。
+- 设计目标：成功提交到 SQLite、未过期且未被判为永久失败的事件，故障恢复后至少一次投递。是否达到目标必须在对应环境验证。
+- FS 回调返回到 SQLite COMMIT 之间仍有内存窗口，进程崩溃可能丢事件。
+- 内存容量满会拒绝入队。worker 落库失败目前只有计数，缺逐事件的持久拒绝证据；不能把“enqueue 返回成功”当成“已持久化”。
 
-## 过期事件（outbox TTL）
-- `outbox-ttl-ms` 默认 `120000`（2 分钟）。设为 `0` 则关闭过期，保持原有行为（不按年龄丢弃）。
-- worker 投递之前，满足 `now_ms - created_at_ms > outbox-ttl-ms` 的 **pending** 行会被设为 `state=dead`、`last_error=expired_ttl`，并计入 `outbox_expired`。该行不会被投递。
-- 这种丢弃是有意为之：长时间中断之后，这些负载已是过时的话务状态，而不是数小时后仍必须送达的记录。
-- **≤ TTL** 的短时中断不会使行过期。这些行仍走既有的自愈并排空路径，无需 `reload mod_event_kafka` 即可全部送达。
-- in-flight 行不会就地过期。投递成功时照常删除该行（ACK）。若投递失败、且在 TTL 之后才把行退回 `pending`，则下一轮会将其过期，不再投递。
-- 恢复之后，dead/已过期行不在到点扫描（fetch_due）范围内，因此新入队的事件会先于这些死信被投递。已过期行仅在会阻塞新插入时才被回收。pending 与 in-flight 行绝不会为腾出空间而被删除。
+## TTL
 
-## 重复
-- broker ACK 之后、本地 `DELETE` 之前崩溃 → 重启后出现重复。消费端**必须**按 `event_id` 去重。
-- 生产者重建，或在结果不明确的失败之后重试，也可能产生重复。
+- 默认 120000 ms；0 关闭。pending 年龄严格大于 TTL 才变为 `dead/expired_ttl`。
+- TTL 按事件年龄，不是单看断网持续时间；断网小于 TTL 也可能因之前积压或恢复排队而过期。
+- in-flight 不就地过期；它可能成功 ACK，也可能失败退回 pending 后再过期。
+- 过期意味着有意放弃，不是补发成功。回收过期 dead 行前要保留验收证据。
 
-## 关闭
-1. 停止接受入队  
-2. 把内存队列中的事件写入 outbox  
-3. `rd_kafka_flush` + poll，直到空闲或超时  
-4. Join worker/poll 线程  
-5. 销毁 producer  
-未 ACK 的行留在磁盘上，供下次加载时处理（启动时执行 `requeue_in_flight`）。
+## 重复与顺序
+
+- broker 接收成功但本地 ACK 未提交时崩溃，或结果不明确后重试，可能重复；消费端按 `x-fs-event-id` 去重。
+- fetch_due 按 call_uuid/created_at_ms 排序只描述当前查询；退避、多条 in-flight、同毫秒事件、producer 重建可能影响最终顺序。
+- 当前不宣称严格通话消费顺序。需要时用独立注入序号和 `--check-order` 验证；跨分区不能依赖消费合并顺序。
+
+## 关闭与恢复
+
+停止接收 → worker 尽力写完队列 → 停止线程 → flush → 销毁 producer。未 ACK 的持久行下次加载时重新排队。
+
+普通断连演练不覆盖真实 FS SIGKILL、fatal 并发重建或磁盘故障。错误日志停止也不能证明消息送达；应核对 [事件集合与 outbox 终态](TEST-PLAN.md)。

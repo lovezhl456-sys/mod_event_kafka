@@ -1,17 +1,21 @@
-# 部署 / 回滚
+# 部署与回滚
 
-## 部署
-1. 安装 `librdkafka`、`libsqlite3`。
-2. 构建 `mod_event_kafka.so`（见仓库根目录的 `Makefile`；它会以 `-Iinclude` 编译 `src/kafka_*.cpp`）。
-3. 安装配置文件；将 `bootstrap-servers` 设为 **toxiproxy/实验室 bootstrap 或生产 bootstrap**（二者切勿混用）。
-4. 确保 `outbox-path` 所在目录对 FreeSWITCH 运行用户可写。
-5. `load mod_event_kafka`。流水线健康时，Kafka 重启后**无需** reload。
+先在与生产一致的 FS ABI、librdkafka 版本和配置下联调；core 测试通过不等于 `.so` 可加载。演练结果范围见 [STATUS](STATUS.md)。
+
+## 安装检查
+
+1. 安装构建所需的 FS 头文件、librdkafka、SQLite3、zlib、OpenSSL 开发包。
+2. `make` 构建模块；保存源码 commit、`.so` hash、FS 和运行时 librdkafka 版本。
+3. 备份现有模块和配置；明确使用实验室或生产 bootstrap，避免混用。
+4. 配置 FS 用户可写的 outbox 路径，明确 TTL、容量和压缩设置。
+5. 在已安排的加载窗口安装并加载模块，确认实际消费到带 `x-fs-event-id` 的事件。
+
+正常故障恢复演练期间不 reload；是否需要部署新二进制是另一件事。
 
 ## 回滚
-1. `unload mod_event_kafka`
-2. 恢复旧版 `.so`，以及不含 outbox 参数的配置（旧配置依然有效；新参数均为可选）。
-3. Outbox 数据库可以归档；若日后重新加载新构建，残留行可以安全保留。
 
-## 本环境未验证
-- 生产环境的云端 Kafka
-- 在本机完整加载新 `.so` 的 FreeSWITCH（Phase1 阶段本机没有 FS 头文件）
+1. 停止新事件进入模块并卸载，保留日志、DB、WAL/SHM 的一致备份。
+2. 恢复匹配的旧 `.so` 与配置后加载。
+3. 旧无 outbox 模块不会自动重放新模块的 SQLite 数据。保留数据库，另行决定重放、过期或归档，防止重复和旧状态回灌。
+
+不要为了“恢复”直接删除 outbox，也不要把单次重载成功写成无需重载自愈。
