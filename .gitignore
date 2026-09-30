@@ -76,3 +76,7 @@ id_rsa
 id_rsa.*
 reports/
 **/smoke-*.txt
+
+# Python 缓存
+__pycache__/
+*.pyc
