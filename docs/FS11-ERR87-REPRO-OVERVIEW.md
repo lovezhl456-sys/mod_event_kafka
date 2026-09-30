@@ -1,7 +1,7 @@
 # FS-11 / Err-87 复现方法与整体思路
 
 > **状态：已 empirically（旧无 outbox + FS 1.6.20 lab）。未经生产验证。**  
-> 本文是 FS-11 的总览。§4 按操作员实际动作写清故障是怎么注入的。逐条命令以证据包 `reproduce.sh` 为准；验收门与逐项证据仍以 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-11、[DRILL-RUNBOOK.md](DRILL-RUNBOOK.md) §10、[STATUS.md](STATUS.md) 为准。
+> 本文是 FS-11 的总览。§4 按操作员实际动作写清故障是怎么注入的。逐条命令以证据包 `reproduce.sh` 为准；验收门与逐项证据仍以 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-11、[DRILL-RUNBOOK.md](DRILL-RUNBOOK.md) §10、[STATUS.md](STATUS.md) 为准。§8 是生产推断 FAQ，每一问都标 **未 empirically / 推断**，不是实验室结论。
 
 **先记住三件事：**
 
@@ -46,7 +46,7 @@
 
 **对照（排除法）：** 同一条 null-key 路径换到 `cleanup.policy=delete` 的 topic，不出现 **+87**（R2）。较早的 FS 1.10.x 对照一轮里另做过独立冒烟：compact + 非空 key 也是 OK。所以问题出在「compact topic + null key」的组合上，与断连无关。
 
-> 可能的生产诱因：云 Kafka 升级后，目标 topic 的 `cleanup.policy` 变成（或本来就是）`compact`。这是推断，需要到生产侧用 `kafka-topics.sh --describe` 核对 topic 配置，本文不宣称已确认。
+> 可能的生产诱因：云 Kafka 升级后，目标 topic 的 `cleanup.policy` 变成（或本来就是）`compact`。这是推断，需要到生产侧用 `kafka-topics.sh --describe` 核对 topic 配置，本文不宣称已确认。生产侧常见问法见 §8，仍是 **未 empirically / 推断**。
 
 ## 3. 错误码对照（不得混用）
 
@@ -214,7 +214,48 @@ RESULT：该窗口 0 次投递失败 / 0 次 `INVALID_RECORD`，并且出现 `To
 - R3（收紧 `message.timestamp.*.max.ms`，另一条可能打出 **+87** 的路径）未跑，不计入。
 - 以上全部 **未经生产验证**。
 
-## 8. 相关文档
+## 8. 生产推断 FAQ（未 empirically / 推断）
+
+> **本节全部是生产侧假设：未 empirically / 推断，未经生产验证。**  
+> 实验室已经实证、可以标 empirically 的，仍只有 §4：旧无 outbox + FS 1.6.20 上，`cleanup.policy=compact` 加 null key 得到 broker **+87** `INVALID_RECORD`（R1）；同一路径换成 `cleanup.policy=delete` 则不出现 **+87**（R2）。那些 RESULT 留在 §4，本节不另编数字，也不把它们写成生产结论。  
+> **+87** `INVALID_RECORD` 与 **-187** `ALL_BROKERS_DOWN` 仍是两个码。云 Kafka 升级是否就是触发原因，本节不写成已确认事实。
+
+> **自愈 ≠ 机制自愈（未 empirically / 推断）。**  
+> compact + null key 这条路径不会自己愈合。日志停了，意味着中间有东西变了：topic 的 `cleanup.policy`、`event-filter`、回滚，或其他配置。核对时看升级**前**和升级**后**的 `kafka-topics --describe`（尤其 `cleanup.policy`），以及故障窗口的 FS 日志。
+
+**问：为何平时可能没事？（未 empirically / 推断）**
+
+未 empirically / 推断。下面几种都说得通，生产上尚未核对：
+
+- （未 empirically / 推断）topic 的 `cleanup.policy` 是 `delete`。实验室 R2 只说明 delete 上同一条 null-key 路径不出现 **+87**；生产 topic 是不是 delete，要看 `kafka-topics --describe`。
+- （未 empirically / 推断）`event-filter` 没有开到 `SWITCH_EVENT_ALL`。HEARTBEAT、RE_SCHEDULE 这类没有 `Channel-Call-UUID` 的事件没有被订到，null key 就没有发出去。
+- （未 empirically / 推断）topic 本来就不是 compact。
+
+**问：为何云 Kafka 升级后像突然出现？（未 empirically / 推断）**
+
+未 empirically / 推断，**未证实**。升级和报错在时间上挨着，只是线索。可能的解释都还没有生产证据：升级或重建把目标 topic 改成了 `cleanup.policy=compact`，或新建 topic 的默认策略成了 compact；或者 broker 对记录的校验变严，原先能过的 null key 开始被拒。本文不把「云 Kafka 升级」写成已经确认的触发原因。要核对，留升级前、升级后各一份 `kafka-topics --describe`（现场常写作 `kafka-topics.sh --describe`），重点看 `cleanup.policy`。
+
+**问：为何几小时又自动恢复？（未 empirically / 推断）**
+
+未 empirically / 推断。**自愈 ≠ 机制自愈。** compact + null key 不会自己好：topic 仍是 `cleanup.policy=compact`、过滤仍订到没有 `Channel-Call-UUID` 的事件、模块仍对缺头发 null key 时，broker 会继续返回 **+87** `INVALID_RECORD`。几小时后日志停了，推断是中间有东西变过，例如：
+
+- （未 empirically / 推断）topic 的 `cleanup.policy` 被改过（例如从 compact 改回 delete）。
+- （未 empirically / 推断）`event-filter` 被收窄，不再订到缺头的系统事件。
+- （未 empirically / 推断）模块、配置或集群做过回滚，或其他配置变更。
+- （未 empirically / 推断）若生产上的 **+87** 来自时间戳窗口（收紧 `message.timestamp.*.max.ms`），窗口过后记录又能通过。这是 R3，**实验室未跑**，不能标成 empirically。
+
+以上都不是 compact + null key 自己愈合。分清是哪一种，对照升级前后的 `kafka-topics --describe`（尤其 `cleanup.policy`）和故障窗口的 FS 日志。
+
+**问：想钉死要拿什么？（未 empirically / 推断）**
+
+未 empirically / 推断。下面是还没拿到的核对材料，不是已有的生产结论：
+
+- （未 empirically / 推断）升级**前**一份、升级**后**一份 `kafka-topics --describe`（或 `kafka-topics.sh --describe`），重点看 `cleanup.policy`。
+- （未 empirically / 推断）故障窗口的 FS 日志：`Err-87` / `Message delivery failed` 从何时开始、何时停止；同一窗口里有没有改 topic、改 `event-filter`、回滚或重载。
+
+**代码阅读，非生产结论：** 当前 master 在没有 `Channel-Call-UUID` 时仍发 null key，并且不把 `INVALID_RECORD` 当成永久错误。这是读代码，不是生产结论。详见 §7。
+
+## 9. 相关文档
 
 - [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) — FS-11 场景定义、如何注入、验收门、+87 / -187 对照
 - [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md) §10 — FS-11 分步复现（R0/R1/R2）、证据文件清单、明确不做的事
