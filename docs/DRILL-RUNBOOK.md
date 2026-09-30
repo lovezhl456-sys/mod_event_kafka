@@ -168,7 +168,8 @@ sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
 > 这是与生产目标版本匹配的实验室实证。未经生产验证。  
 > 更早的一轮 `reports/fs11-err87-20260930-154534/`（旧无 outbox + FS 1.10.x lab）保留为对照，见 §10.8。当时 Jessie 运行时镜像挡住了 1.6，所以那一轮改在 1.10.x 上跑。该阻塞已解除，R1/R2 在 1.6.20 上重跑并通过。不得写成「FS 1.6 一直可用」。  
 > 场景定义见 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-11。  
-> **不要**执行 `lab/toxiproxy_cut_restore.sh`（也不要执行共享机上的 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh`）来做本节。短断 35s 与超 TTL 断连 150s 制造的是客户端断连，对应 **-187** `ALL_BROKERS_DOWN`，不是 **+87**。
+> **不要**执行 `lab/toxiproxy_cut_restore.sh`（也不要执行共享机上的 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh`）来做本节。短断 35s 与超 TTL 断连 150s 制造的是客户端断连，对应 **-187** `ALL_BROKERS_DOWN`，不是 **+87**。  
+> 故障是怎么注入的（换了哪份 conf、为什么缺 `Channel-Call-UUID`、以及「未做 toxiproxy cut / 不是断流 / 不是 -187」），见 [FS11-ERR87-REPRO-OVERVIEW.md](FS11-ERR87-REPRO-OVERVIEW.md) §4。
 
 用户日志里的 `Err-87` 是 Kafka **broker** 错误码 **+87**，名字是 `INVALID_RECORD`。旧版 librdkafka 不认识该码时会印成 `Err-87?`。FS 1.6.20 这一轮打出的是同一码的具名文本（broker-reason，`R1_INVALID_COUNT=670`）：
 

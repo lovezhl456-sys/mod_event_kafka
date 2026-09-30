@@ -1,7 +1,7 @@
 # FS-11 / Err-87 复现方法与整体思路
 
 > **状态：已 empirically（旧无 outbox + FS 1.6.20 lab）。未经生产验证。**  
-> 本文是 FS-11 的总览，只讲整体思路和复现方法，给运维按图索骥用。分步命令、验收门与逐项证据仍以 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-11、[DRILL-RUNBOOK.md](DRILL-RUNBOOK.md) §10、[STATUS.md](STATUS.md) 为准，本文不重复展开。
+> 本文是 FS-11 的总览。§4 按操作员实际动作写清故障是怎么注入的。逐条命令以证据包 `reproduce.sh` 为准；验收门与逐项证据仍以 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-11、[DRILL-RUNBOOK.md](DRILL-RUNBOOK.md) §10、[STATUS.md](STATUS.md) 为准。
 
 **先记住三件事：**
 
@@ -58,13 +58,86 @@
 - **+87** 是正号，来自 broker；**-187** 是负号，来自客户端本地。不要把 `Err-87` 解释成 `ALL_BROKERS_DOWN`。
 - toxiproxy 短断（`lab/toxiproxy_cut_restore.sh`，35s / 150s）只覆盖 **-187** / 断连演练，**不是** FS-11。任何 **-187** 日志都不能当作 FS-11 PASS。
 
-## 4. 复现路径（运维可跟）
+## 4. 故障如何注入（操作员实际做了什么）
 
-整体分三步，全部由主证据目录里的 `reproduce.sh` 完成。命令以该脚本原文为准，本文只摘要，不另编命令或镜像标签。
+这一节写实验室里**实际做的事**：用 compact topic 加上 null key 让 broker 拒收记录。没跑过这次实验的人，按下面编号往下读。这不是断网，也不是断流演练。主路径是 FreeSWITCH **1.6.20**；更早的 FS 1.10.x 目录 `reports/fs11-err87-20260930-154534/` 只作对照。全部 **未经生产验证**。**+87** `INVALID_RECORD` 不是 **-187** `ALL_BROKERS_DOWN`。
+
+安装软件大师补充（原样）：
+
+- 故障不是断网。
+- R1：topic=`fs_events_compact` + `cleanup.policy=compact`；conf 里 `event-filter` 开宽（ALL）；心跳等事件 **没有** `Channel-Call-UUID` → 旧模块发 **null key** → broker 拒收 → `mod_event_kafka.cpp:197`。
+- R2 对照：只换 topic=`fs_events_delete` + delete policy 的 conf，再起 FS。
+- 完整命令以证据包里的 `reproduce.sh` 为准（`reports/fs11-err87-fs16-20260930-162827/`）。
+
+证据包在实验室机器上的绝对路径是 `/workspace/mod_event_kafka-fix/reports/fs11-err87-fs16-20260930-162827/`。工具链在 `/workspace/lab-mod-event-kafka/fs16/`。本文不另编命令或镜像标签；要重跑，执行该脚本原文：
 
 ```bash
 bash /workspace/mod_event_kafka-fix/reports/fs11-err87-fs16-20260930-162827/reproduce.sh
 ```
+
+### 4.1 编号步骤
+
+**1. 拉起 Kafka、toxiproxy 和 FS 1.6.20，装上旧的无 outbox `.so`**
+
+脚本在 `/workspace/lab-mod-event-kafka` 做 `docker compose up -d`。起来的是 Kafka 镜像 `apache/kafka:3.8.1`（容器 `lab-kafka-1`）和 toxiproxy 镜像 `shopify/toxiproxy:2.1.4`（容器 `lab-toxiproxy`）。toxiproxy 只作为 bootstrap 的转发代理留在栈里，这一步不切断它。
+
+然后用镜像 `lab-freeswitch:1.6.20-kafka` 起容器 `lab-freeswitch-16`（`--network host`）。脚本把证据包里已编好的旧模块拷进容器：
+
+- 源文件：证据包 `build-upstream/mod_event_kafka.so`（upstream，**无 outbox**，md5 `063e55cb0a584839f68d44a22dab62e6`）
+- 容器内路径：`/usr/local/freeswitch/lib/freeswitch/mod/mod_event_kafka.so`
+
+这份 `.so` 的失败日志在 `dr_msg_cb`、`mod_event_kafka.cpp:197`，没有 outbox，也没有重试流水线。需要重编时用工具链 `/workspace/lab-mod-event-kafka/fs16/`，见本节末尾；重编不是注入本身。
+
+RESULT（2026-09-30 16:29:59 +0800 Asia/Shanghai）：R0 FS+Kafka PASS，`module_exists=true`。版本字符串是 `FreeSWITCH version: 1.6.20+git~20180123T214909Z~987c9b9a2a~64bit`。
+
+**2. 建 compact topic，换上 compact 的 conf：没有 `Channel-Call-UUID` 的事件以 null key 发出，broker 拒收**
+
+注入点是 topic 策略和模块配置，不是网络。脚本在 `lab-kafka-1` 上创建两个 topic，各 1 分区、RF=1。R1 用的是 `fs_events_compact`（`cleanup.policy=compact`）。`fs_events_delete` 同时建好，留给第 3 步，R1 不往它发。
+
+R1 实际换上的文件：
+
+- 证据包里的 compact 配置：`conf/event_kafka.conf.xml`（topic 为 `fs_events_compact`）
+- 拷进容器后覆盖的路径：`/usr/local/freeswitch/etc/freeswitch/autoload_configs/event_kafka.conf.xml`
+- 然后 `fsctl shutdown now`，再 `docker start lab-freeswitch-16`，让 FS 按这份 conf 重新起来
+
+`event-filter` 开宽（ALL）：模块说明记录为 event filter 为空，因此订阅 `SWITCH_EVENT_ALL`。模块听的是全部事件。HEARTBEAT、RE_SCHEDULE 等系统事件本来就没有头 `Channel-Call-UUID`。旧模块拿这个头当 Kafka key，头不存在就发出 **null key**：
+
+```text
+PublishEvent: char *uuid = switch_event_get_header(event, "Channel-Call-UUID");
+send(event_json, uuid, 0);
+send(): key_length = key == NULL ? 0 : strlen(key);
+        rd_kafka_produce(..., key, key_length, ...);
+```
+
+`cleanup.policy=compact` 的 topic 要求非空 key。null key 在 broker 校验阶段被拒绝，返回 **+87** `INVALID_RECORD`（也就是用户日志里的 Err-87）。旧模块在投递回调里打出第 197 行。链路是通的：broker 收到了记录，然后拒收。
+
+R1 要看的日志（FS 日志 / broker-reason，原文）：
+
+```text
+[ERR] mod_event_kafka.cpp:197  Message delivery failed Broker: Broker failed to validate record
+```
+
+RESULT：含 `Broker failed to validate record` 的行数是 670（`R1_INVALID_COUNT=670`）。`topic-config.txt` 里 `fs_events_compact` 的配置是 `cleanup.policy=compact`。
+
+**3. 对照：只换成 delete 策略的 conf，再起一次 FS。同一条路径不出现 +87**
+
+不换 `.so`，不改「听 ALL、缺头就发 null key」这条路径，也不动 toxiproxy。脚本先用 `wc -c` 记下当时 `freeswitch.log` 的字节长度，后面只看这次重启之后新增的内容。然后只换配置：
+
+- 证据包里的 delete 配置：`conf/event_kafka.conf.delete.xml`（topic 为 `fs_events_delete`，`cleanup.policy=delete`）
+- 拷到容器内**同一个**路径，覆盖上一步的 compact conf：`/usr/local/freeswitch/etc/freeswitch/autoload_configs/event_kafka.conf.xml`
+- 再 `fsctl shutdown now`，再 `docker start lab-freeswitch-16`
+
+R2 要看的日志：重启之后的新日志里找 `Topic :`、`Message delivery failed`、`Broker failed`（脚本用 `tail -c +$((MARK+1))` 再按这几项过滤）。
+
+RESULT：该窗口 0 次投递失败 / 0 次 `INVALID_RECORD`，并且出现 `Topic : fs_events_delete`。计数是 `R2_INVALID_COUNT=0`。`topic-config.txt` 里 `fs_events_delete` 的配置是 `cleanup.policy=delete`。同一条 null-key 路径在 delete topic 上不产生 **+87**。
+
+**4. 明确：没有断网，没有 toxiproxy cut，这不是断流演练**
+
+未做 toxiproxy cut / 不是断流 / 不是 -187。
+
+`reproduce.sh` 没有调用 `lab/toxiproxy_cut_restore.sh`（也没有调用共享机上的 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh`），也没有 disable toxiproxy 的 `kafka1` / `kafka2` / `kafka3`。没有掐网络。toxiproxy 从 compose 起来之后只做转发。日志里要找的是第 2 步那一行 broker 拒收，不是 **-187** `ALL_BROKERS_DOWN`。短断 35s / 超 TTL 150s 属于 FS-01 / FS-09，不能当成这次 PASS。
+
+### 4.2 结果对照（补充；注入步骤以 §4.1 为准）
 
 | 步骤 | 做什么 | 期望 | 结果（RESULT，2026-09-30 16:29:59 +0800 Asia/Shanghai） |
 |------|--------|------|------|
@@ -76,8 +149,8 @@ bash /workspace/mod_event_kafka-fix/reports/fs11-err87-fs16-20260930-162827/repr
 
 - 脚本开头会执行 `sudo iptables-legacy -P FORWARD ACCEPT`，并通过 `sg docker` 调 docker，需要 sudo 与 docker 组权限。
 - 脚本会 `docker rm -f lab-freeswitch-16` 后重建容器；topic 用 `--if-not-exists` 创建，重复执行不会报错。
-- toxiproxy 只作为 bootstrap 的转发代理在栈里跑着，本流程**不**切断它，也**不**调用 `toxiproxy_cut_restore.sh`。
-- 1.6.20 镜像的模块目录是 `/usr/local/freeswitch/lib/freeswitch/mod`，配置目录是 `/usr/local/freeswitch/etc/freeswitch/autoload_configs`，与 1.10.x 镜像的 `/usr/local/freeswitch/mod` 不同。
+- toxiproxy 只作为 bootstrap 的转发代理在栈里跑着。未做 toxiproxy cut / 不是断流 / 不是 -187。
+- 1.6.20 镜像的模块目录是 `/usr/local/freeswitch/lib/freeswitch/mod`，配置目录是 `/usr/local/freeswitch/etc/freeswitch/autoload_configs`，与 1.10.x 镜像的 `/usr/local/freeswitch/mod` 不同。1.10.x 那一轮的 `reproduce.sh` 不要拿来跑 1.6.20。
 - **栈目前仍在跑**（RESULT 记录：`lab-kafka-1`、`lab-toxiproxy`、`lab-freeswitch-16` 在 host 网络上 UP，FS 当前挂的是 delete topic 的配置；构建容器 `fs16-build` 可能也还在）。直接看现状即可，不必先拆栈；重跑 `reproduce.sh` 会重建 `lab-freeswitch-16`。
 
 ### 重编旧 `.so`（需要时）
