@@ -1,4 +1,4 @@
-# 状态 — 2026-09-25（Asia/Shanghai）；FS-11 增补 2026-09-30
+# 状态 — 2026-09-25（Asia/Shanghai）；FS-11 增补 2026-09-30（1.6.20 重跑）
 
 实验室源码已合入本仓库根目录（`include/`、`src/`、`mod_event_kafka.cpp`）。下文提到的 `work/` 指产生证据的实验室机器上的目录树，并不是本 PR 里的第二份副本。
 
@@ -13,9 +13,10 @@
 - 断连 150 秒 > TTL：过期行的状态为 `dead/expired_ttl`，`expired_still_in_topic=0`；consumed_matched=30 / 60（未过期的均已送达）
 - 自愈之后：新呼叫 VERIFY_OK 30/30
 - 候选补丁 0001 = **NOT_VERIFIED**
-- FS-11 **已 empirically（旧无 outbox + FS 1.10.x lab）**：R1 compact+null key → **+87** `INVALID_RECORD` PASS；R2 delete 同一路径无 **+87** PASS
-- 证据路径：`reports/fs11-err87-20260930-154534/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-20260930-154534/`）
-- FS 二进制为 1.10.7-dev（镜像 `lab-freeswitch:1.10.12-kafka`）。**不是** FS 1.6 实证
+- FS-11 **已 empirically（旧无 outbox + FS 1.6.20 lab）**：R1 compact+null key → **+87** `INVALID_RECORD` PASS（670 行）；R2 delete 同一路径无 **+87** PASS（`R2_INVALID_COUNT=0`）
+- 主证据路径：`reports/fs11-err87-fs16-20260930-162827/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-fs16-20260930-162827/`）
+- FS 二进制为 **1.6.20**（镜像 `lab-freeswitch:1.6.20-kafka`，容器 `lab-freeswitch-16`）。这是与生产目标版本匹配的实验室实证
+- 对照（保留，不删除）：先前 Jessie 运行时镜像挡住 FS 1.6 时的一轮，`reports/fs11-err87-20260930-154534/`（旧无 outbox + FS 1.10.x lab）。该阻塞已由源码构建的 `lab-freeswitch:1.6.20-kafka` 解除，R1/R2 在 1.6.20 上重跑并通过
 
 ## 已完成
 - 已实现 `outbox-ttl-ms`（默认 `120000`；`0` 表示关闭）。超过 TTL 的 pending 行被标为 `dead` / `last_error=expired_ttl`，且不会被投递。
@@ -32,7 +33,7 @@
 - L-03–L-15 未完整跑过。
 - 未经生产验证。
 - 候选补丁 0001 = **NOT_VERIFIED**（仅作反面参考）。不得将其标为已通过生产验证。
-- FS-11 没有在 FS 1.6 上跑（`fs16-blocker.txt`：`praekeltfoundation/freeswitch:1.6` 为 1.6.20 / Debian Jessie，缺头文件与 librdkafka，且与实验室 1.10.12 头文件 ABI 不兼容）。不得写成已在 FS 1.6 实证。生产目标仍是 FS 1.6。
+- FS-11 不得写成「Jessie 那一轮就能在 FS 1.6 上编译」。`praekeltfoundation/freeswitch:1.6`（1.6.20 / Debian Jessie，仅运行时，缺头文件与 librdkafka）当时挡住了 1.6。该阻塞后来才由源码构建的 `lab-freeswitch:1.6.20-kafka` 解除；解除之后的 R1/R2 见下文 FS-11，仍未经生产验证。不得写成「FS 1.6 一直可用」。
 - FS-11 的 R3（`message.timestamp.*.max.ms`）未跑。FS-11 没有对应的 TEST-PLAN L-xx。
 - 断连类 **-187** `ALL_BROKERS_DOWN` 不是 FS-11。本次证据不是 toxiproxy 断流。
 
@@ -82,17 +83,16 @@
 - 候选补丁 0001 = **NOT_VERIFIED**（仅作反面参考）
 - 限制：L-03–L-15 未完整跑过；未经生产验证
 
-## FS-11（Err-87 `INVALID_RECORD`，2026-09-30）
-- **已 empirically（旧无 outbox + FS 1.10.x lab）**
-- **R0 FS+Kafka = PASS**，**R1 = PASS**，**R2 = PASS**（`RESULT.txt`，2026-09-30 15:48:11 +0800）
-- 证据路径：`reports/fs11-err87-20260930-154534/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-20260930-154534/`，含 `RESULT.txt`、`broker-reason.txt`、`topic-config.txt`、`reproduce.sh`、`fs16-blocker.txt`、模块说明与 R1/R2 日志）。`reports/` 不入库
-- FS：`FreeSWITCH version: 1.10.7-dev+git~20210825T173719Z~dd2411336f~64bit`（git `dd24113`，2021-08-25 17:37:19Z 64bit）。镜像标签 `lab-freeswitch:1.10.12-kafka`（二进制报告 1.10.7-dev）
-- 模块：upstream 旧模块（无 outbox），`mod_event_kafka.cpp:197` `dr_msg_cb`。加载日志是 `KafkaEventPublisher Initialising...`（约第 87 行），不是当前 master 的 outbox 流水线。当前 master **不会**打出第 197 行
-- **R1：** topic `fs_events_compact`，`cleanup.policy=compact`。`event-filter` 为空（订阅 ALL）。缺少 `Channel-Call-UUID` 的事件（HEARTBEAT、RE_SCHEDULE 等）以 null key 发送。日志：`Message delivery failed Broker: Broker failed to validate record`（`mod_event_kafka.cpp:197`）。R1 窗口 482 行。独立冒烟：`DR_FAIL err=87 (Broker: Broker failed to validate record) topic=fs_events_compact key_len=0`
-- **R2：** 同一旧模块、同一 null-key 路径，topic `fs_events_delete`，`cleanup.policy=delete`。delivery-fail = 0，`INVALID_RECORD` = 0
-- 独立对照（`broker-reason.txt`）：compact+NULL → err=87；delete+NULL → OK；compact+非空 key → OK
-- 不是 **-187** `ALL_BROKERS_DOWN`，没有用 toxiproxy 断流
-- **FS 1.6 未跑。** `fs16-blocker.txt`：`praekeltfoundation/freeswitch:1.6`（FreeSWITCH 1.6.20，Debian Jessie）没有 freeswitch-dev / 头文件，没有 librdkafka，Jessie apt 已 EOL；实验室头文件是 FS 1.10.12（bookworm），与 1.6 ABI 不兼容。决定改用 FS 1.10.x + 旧 `.so`。生产目标仍是 FS 1.6。不得写成已在 FS 1.6 实证
-- 强制 null key 的实验补丁没有用于 R1；走的是真实缺 `Channel-Call-UUID` 的路径
-- R3（`message.timestamp.*.max.ms`）未跑
+## FS-11（Err-87 `INVALID_RECORD`，2026-09-30，主证据为 FS 1.6.20）
+- **已 empirically（旧无 outbox + FS 1.6.20 lab）**。这是与生产目标版本匹配的实验室实证。未经生产验证。
+- **R0 FS+Kafka = PASS**，**R1 = PASS**，**R2 = PASS**（RESULT，2026-09-30 16:29:59 +0800 Asia/Shanghai）
+- 主证据路径：`reports/fs11-err87-fs16-20260930-162827/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-fs16-20260930-162827/`，含 RESULT、`fs-version.txt`、`topic-config.txt`、`reproduce.sh`、`REBUILD-SO.md`、broker-reason、模块说明与 R1/R2 计数）。`reports/` 不入库，本仓库不提交 `.so`
+- FS：`FreeSWITCH version: 1.6.20+git~20180123T214909Z~987c9b9a2a~64bit`（git `987c9b9`，2018-01-23 21:49:09Z 64bit）。镜像 `lab-freeswitch:1.6.20-kafka`（id `f057ade5fc2f`，约 192MB），容器 `lab-freeswitch-16`（`--network host`）。由 signalwire/freeswitch 标签 v1.6.20 在 debian:buster-slim 上源码构建，OpenSSL 1.0.2u（`/opt/openssl10`）。头文件 / pkg-config：`freeswitch` 1.6.20，前缀 `/usr/local/freeswitch`。`module_exists=true`（`fs_cli` 版本字符串与 `freeswitch -version` 相同）
+- 模块：upstream 旧模块（无 outbox），源码 `/workspace/mod_event_kafka-fix/upstream/`，按 FreeSWITCH 1.6.20 头文件编译。证据目录内 `.so` 为 `build-upstream/mod_event_kafka.so`（md5 `063e55cb0a584839f68d44a22dab62e6`），装入 `/usr/local/freeswitch/lib/freeswitch/mod/mod_event_kafka.so`。失败日志在 `dr_msg_cb`、`mod_event_kafka.cpp:197`（格式串 `Message delivery failed %s`）。无 outbox / 重试流水线，只有直接 produce + `dr_msg_cb`。当前 master 的 outbox 流水线 **不会**打出第 197 行
+- **R1：** topic `fs_events_compact`，`cleanup.policy=compact`（partitions=1，RF=1）。`event-filter` 为空，订阅 `SWITCH_EVENT_ALL`。启动时的 HEARTBEAT、RE_SCHEDULE 等没有 `Channel-Call-UUID`，`PublishEvent` 取出的 key 为 NULL，`send()` 里 `key_length = key == NULL ? 0 : strlen(key)`，再交给 `rd_kafka_produce`。日志：`Message delivery failed Broker: Broker failed to validate record`（`mod_event_kafka.cpp:197`）。`R1_INVALID_COUNT=670`。模块说明把该文本标为 `RD_KAFKA_RESP_ERR_INVALID_RECORD` / broker **+87**
+- **R2：** 同一旧模块、同一 null-key 路径，换成 topic `fs_events_delete`，`cleanup.policy=delete`。`R2_INVALID_COUNT=0`。R2 日志窗口：0 次投递失败 / 0 次 `INVALID_RECORD`，topic 为 `fs_events_delete`
+- 不是 **-187** `ALL_BROKERS_DOWN`。`reproduce.sh` 没有调用 toxiproxy 断流。短断 35s / 超 TTL 断连 150s 仍归 FS-01 / FS-09，不能当作 FS-11 PASS
+- **Jessie 阻塞已解除，不是「1.6 一直可用」。** 更早曾拉取 `praekeltfoundation/freeswitch:1.6`（FreeSWITCH 1.6.20，Debian Jessie，仅运行时）：没有头文件，没有 librdkafka，Jessie apt 已 EOL，且与当时实验室的 FS 1.10.12 头文件 ABI 不兼容，所以那一轮没有在 1.6 上跑。该阻塞由本次源码构建镜像 `lab-freeswitch:1.6.20-kafka` 取代（见主证据 RESULT 与 `REBUILD-SO.md`）。重编工具链在 `/workspace/lab-mod-event-kafka/fs16/`，脚本 `scripts/rebuild-mod.sh`。R1/R2 在 FS 1.6.20 上重跑并通过
+- **对照（保留，不删除）：** `reports/fs11-err87-20260930-154534/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-20260930-154534/`），**旧无 outbox + FS 1.10.x lab**。镜像 `lab-freeswitch:1.10.12-kafka`，二进制 `FreeSWITCH version: 1.10.7-dev+git~20210825T173719Z~dd2411336f~64bit`（git `dd24113`）。`RESULT.txt` 时间 2026-09-30 15:48:11 +0800。R1 窗口 482 行 `INVALID_RECORD`；R2 delivery-fail = 0。独立冒烟记下 `DR_FAIL err=87 ... key_len=0`，以及 compact+NULL → err=87、delete+NULL → OK、compact+非空 key → OK。目录里的 `fs16-blocker.txt` 记录的是当时 Jessie 运行时镜像为何编不过，该叙述已被上面的 1.6.20 源码构建取代。这一轮是 1.6 被挡住时的较早实验室通过，不代替 1.6.20 主证据
+- 1.6.20 这一轮走的是真实缺 `Channel-Call-UUID` 的路径（模块说明）。R3（`message.timestamp.*.max.ms`）未跑
 - 无对应 L-xx。未经生产验证。候选补丁 0001 = **NOT_VERIFIED**（仅作反面参考）
