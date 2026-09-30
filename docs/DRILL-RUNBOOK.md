@@ -1,8 +1,8 @@
-# Kafka / mod_event_kafka 演练手册（一步步）
+# Kafka / mod_event_kafka 演练手册（分步）
 
-> 目标：在本机 lab 上按固定步骤复现「短断自愈 / 超 TTL 过期 / 恢复后新呼叫」。  
-> 命令均来自本机已跑通路径。参数名、`x-fs-event-id`、状态字面量保持英文。  
-> 本文步骤在仓库根目录执行，主命令用相对路径（`lab/toxiproxy_cut_restore.sh`、`lab/dialtest_fast.sh`、`lab/dialtest_originate.sh`）。共享实验室机器上仍可用绝对路径 `/workspace/lab-mod-event-kafka/…`（脚本在该目录根下，不带 `lab/` 前缀）。对照见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md) §2.1。
+> 目标：在本机实验室上按固定步骤复现「短断自愈 / 超 TTL 过期 / 恢复后新呼叫」。  
+> 命令均取自本机已跑通的流程。参数名、`x-fs-event-id`、状态字面量保持英文。  
+> 本文步骤均在仓库根目录执行，主要命令使用相对路径（`lab/toxiproxy_cut_restore.sh`、`lab/dialtest_fast.sh`、`lab/dialtest_originate.sh`）。共享实验室机器上仍可用绝对路径 `/workspace/lab-mod-event-kafka/…`（脚本在该目录根下，不带 `lab/` 前缀）。对照见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md) §2.1。
 
 对应故障场景：短断是 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-01；超 TTL 与恢复后新呼叫是 FS-09。
 
@@ -12,19 +12,19 @@
 # Docker 可用
 sg docker -c 'docker info' >/dev/null
 
-# 桥接互通（本机曾需要）
+# bridge 网络容器互通（本机曾需要此设置）
 sudo iptables-legacy -P FORWARD ACCEPT
 
-# 镜像是否在本地（FS 需事先 build/commit）
+# 检查镜像是否已在本地（FS 镜像需事先 build/commit）
 sg docker -c 'docker images | rg "apache/kafka|toxiproxy|lab-freeswitch"'
 ```
 
-确认 conf 含 `outbox-ttl-ms=120000`，且加载日志可见该值（超 TTL 演练硬前置）。
+确认配置中包含 `outbox-ttl-ms=120000`，且加载日志中可见该值（这是超 TTL 演练的硬性前提）。
 
-## 1. 起栈
+## 1. 启动栈
 
 ```bash
-# 仓库内 compose 在 lab/；共享机目录为 /workspace/lab-mod-event-kafka
+# 仓库内的 compose 在 lab/；共享机上的目录为 /workspace/lab-mod-event-kafka
 cd lab
 sg docker -c 'docker compose up -d'
 sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-topics.sh \
@@ -43,11 +43,11 @@ sg docker -c 'docker exec lab-freeswitch env LD_LIBRARY_PATH=/usr/local/freeswit
 # 期望：true
 ```
 
-可选：Kafka 经 toxiproxy 产消冒烟（见 `KAFKA-DEPLOY.md` §3.1）。
+可选：经 toxiproxy 做 Kafka 生产/消费冒烟（见 `KAFKA-DEPLOY.md` §3.1）。
 
 ## 2. 基线拨测
 
-优先快拨测（避免 park 路径长时间 `NO_ANSWER` 阻塞）：
+优先使用快拨测（避免 park 路径因长时间 `NO_ANSWER` 而阻塞）：
 
 ```bash
 lab/dialtest_fast.sh 5
@@ -58,21 +58,21 @@ lab/dialtest_fast.sh 5
 
 - `module_exists=true`
 - FS 日志出现 `enqueued event_id=...`
-- 经 toxiproxy 消费可见 header `x-fs-event-id:...`
+- 经 toxiproxy 消费时可见消息头 `x-fs-event-id:...`
 
 ## 3. 短断演练（约 35s，小于 TTL）
 
-对应 L-02 / L-07 / L-16a 思路：断连期间事件进 outbox，恢复后**无需 reload 模块**即可排空。
+对应 L-02 / L-07 / L-16a 的思路：断连期间事件写入 outbox，恢复后**无需 reload 模块**即可排空。
 
 ```bash
-# 终端 A：切断全部入口 35 秒后自动恢复
+# 终端 A：断开全部入口，35 秒后自动恢复
 lab/toxiproxy_cut_restore.sh 35
 
-# 终端 B：切断期间拨测（与 A 重叠）
+# 终端 B：在断连期间拨测（与 A 时间重叠）
 lab/dialtest_fast.sh 10
 ```
 
-恢复后等待若干秒让 worker 排空，再：
+恢复后等待若干秒，让 worker 排空，然后执行：
 
 ```bash
 python3 /workspace/mod_event_kafka-fix/scripts/verify_event_ids.py \
@@ -80,54 +80,54 @@ python3 /workspace/mod_event_kafka-fix/scripts/verify_event_ids.py \
   --consumed <消费到的 x-fs-event-id 列表文件>
 ```
 
-期望：注入集合与消费集合匹配（历史证据：`reports/l02-l07-fs-20260925-133618/`、`reports/l16-abc-20260925-215439/l16a`）。STATUS 记录的 L-16 根目录是 `reports/l16-abc-20260925-215439/`。
+期望：注入集合与消费集合一致（历史证据：`reports/l02-l07-fs-20260925-133618/`、`reports/l16-abc-20260925-215439/l16a`）。STATUS 记录的 L-16 根目录是 `reports/l16-abc-20260925-215439/`。
 
-本仓库的 `scripts/verify_event_ids.py` 只接受一个目录参数：`scripts/verify_event_ids.py reports/<run-id>/`，目录里要有 `injected_ids.txt` 与 `consumed_ids.txt`。上面的 `--injected` / `--consumed` 是实验室机器 `/workspace/mod_event_kafka-fix/scripts/verify_event_ids.py` 的用法。调用哪一份，就按那一份的参数来；退出码 `0` 仍表示 VERIFY_OK。
+本仓库的 `scripts/verify_event_ids.py` 只接受一个目录参数：`scripts/verify_event_ids.py reports/<run-id>/`，该目录中须包含 `injected_ids.txt` 与 `consumed_ids.txt`。上面的 `--injected` / `--consumed` 是实验室机器 `/workspace/mod_event_kafka-fix/scripts/verify_event_ids.py` 的用法。调用哪一份，就使用哪一份的参数；两者的退出码 `0` 都表示 VERIFY_OK。
 
-一键脚本（本机已有）：
+一键脚本（本机上已有）：
 
 ```bash
-# 内含短断 + 超 TTL + 恢复后新呼叫；会写 reports/l16-abc-<时间戳>/
+# 包含短断 + 超 TTL + 恢复后新呼叫；结果写入 reports/l16-abc-<时间戳>/
 bash /workspace/mod_event_kafka-fix/scripts/run_l16_abc.sh
 ```
 
-## 4. 超 TTL 全断演练（约 150s，大于默认 120s）
+## 4. 超 TTL 全断演练（约 150s，大于默认的 120s）
 
-对应 L-16b：pending 行超时 → `state=dead`，`last_error=expired_ttl`，**不上 topic**。
+对应 L-16b：pending 行超过 TTL → `state=dead`，`last_error=expired_ttl`，**不会写入 topic**。
 
 ```bash
 lab/toxiproxy_cut_restore.sh 150
-# 切断期间拨测注入一批 id
+# 在断连期间拨测，注入一批 id
 lab/dialtest_fast.sh 10
 ```
 
 恢复后：
 
-1. 检查 outbox / 指标：过期计数 `outbox_expired`；死信为 `expired_ttl`
-2. 消费 topic：这批过期 id **不应**出现在 `x-fs-event-id` 中（`expired_still_in_topic=0`）
+1. 检查 outbox / 指标：过期计数看 `outbox_expired`；死信的 `last_error` 为 `expired_ttl`
+2. 消费 topic：这批过期 id **不应**出现在消费到的 `x-fs-event-id` 中（`expired_still_in_topic=0`）
 
 ## 5. 恢复后新呼叫（L-16c）
 
-在 §4 恢复且代理已 `enabled=true` 后：
+在 §4 恢复完成、代理已为 `enabled=true` 之后：
 
 ```bash
 lab/dialtest_fast.sh 10
-# verify_event_ids.py → 新一批应 VERIFY_OK（历史：30/30）
+# verify_event_ids.py → 新的一批应 VERIFY_OK（历史结果：30/30）
 ```
 
-期望：TTL 丢弃过期后，新事件仍可正常投递；仍**无需**为 Kafka 恢复而 reload 模块。
+期望：TTL 丢弃过期事件后，新事件仍可正常投递；同样**无需**为 Kafka 恢复而 reload 模块。
 
 ## 6. 常用辅助命令
 
 ```bash
-# 查代理状态
+# 查看代理状态
 curl -fsS http://127.0.0.1:8474/proxies
 
-# 手动切/开单个入口
+# 手动关闭/开启单个入口
 curl -fsS -X POST http://127.0.0.1:8474/proxies/kafka1 \
   -H 'Content-Type: application/json' -d '{"enabled":false}'
 
-# 带 header 消费
+# 带消息头消费
 sg docker -c 'docker run --rm --network host apache/kafka:3.8.1 \
   /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server 127.0.0.1:19092 --topic fs_events \
@@ -135,11 +135,11 @@ sg docker -c 'docker run --rm --network host apache/kafka:3.8.1 \
   --property print.headers=true --property print.value=false'
 ```
 
-## 7. 收尾拆栈
+## 7. 收尾：拆除栈
 
 ```bash
 sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
-# 镜像与 lab/（共享机为 /workspace/lab-mod-event-kafka）、模块源码保留，下次回归再起
+# 镜像、lab/（共享机上为 /workspace/lab-mod-event-kafka）与模块源码均保留，下次回归时再启动
 ```
 
 ## 8. 证据与对照
@@ -147,13 +147,13 @@ sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
 | 步骤 | 用例 | 本机证据目录（示例） |
 |------|------|----------------------|
 | 短断自愈 | L-02 / L-07 / L-16a | `reports/l02-l07-fs-20260925-133618/`、`reports/l16-abc-20260925-215439/l16a` |
-| 超 TTL 死信 | L-16b | `reports/l16-abc-20260925-215439/l16b` |
+| 超 TTL 转死信 | L-16b | `reports/l16-abc-20260925-215439/l16b` |
 | 恢复后新呼叫 | L-16c | `reports/l16-abc-20260925-215439/l16c` |
 
-未在本手册逐步展开、但可在 `FAULT-SCENARIOS.md` 标注「文档草案」的项：单入口 disable、延迟/带宽 toxic、broker 进程杀、磁盘打满等——需要时再扩脚本，勿与已 PASS 的 L-16 结论混淆。
+本手册未逐步展开、在 `FAULT-SCENARIOS.md` 中标注为「文档草案」的项：单入口 disable、延迟/带宽 toxic、杀 broker 进程、磁盘写满等。需要时再扩充脚本，勿与已 PASS 的 L-16 结论混淆。
 
 ## 9. 安全提醒
 
-- 演练 bootstrap **只能**是 toxiproxy 三端口。  
-- 禁止把 lab conf 改成生产/云 Kafka 地址。  
-- 本文不宣称生产验证。
+- 演练用的 bootstrap **只能**是 toxiproxy 的三个端口。  
+- 禁止把实验室配置改成生产/云端 Kafka 地址。  
+- 本文不宣称已在生产环境验证。
