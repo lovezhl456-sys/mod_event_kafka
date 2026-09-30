@@ -200,9 +200,9 @@ void KafkaPipeline::worker_loop() {
       }
     }
 
-    // 在到点扫描（fetch_due）之前先使陈旧的 pending 行过期，以免被投递。
-    // outbox_ttl_ms 以内的短时中断会使行保持 pending，并走既有的
-    // 自愈并排空路径。ttl <= 0 时保持该路径且不过期。
+    // 在到点扫描（fetch_due）之前，先把过时的 pending 行置为过期，以免被投递。
+    // 时长在 outbox_ttl_ms 以内的短时中断不会使行过期，这些行保持 pending，
+    // 仍走既有的自愈并排空路径。ttl <= 0 时同样走该路径，不做过期处理。
     const int64_t now_ms = wall_now_ms();
     if (cfg_.outbox_ttl_ms > 0) {
       std::string exp_err;

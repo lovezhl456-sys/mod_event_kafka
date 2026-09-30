@@ -19,7 +19,7 @@ struct PipelineConfig {
   std::string topic;
   std::string username;
   std::string password;
-  std::string security_protocol;  // 空则自动选择
+  std::string security_protocol;  // 留空则自动选择
   std::string ssl_ca_location;
   std::string compression{"snappy"};
   std::string outbox_path{"/tmp/event_kafka_outbox.db"};
@@ -32,7 +32,7 @@ struct PipelineConfig {
   int worker_idle_ms{50};
   int poll_ms{100};
   int max_attempts_before_dead{50};
-  // 超过此时长的 pending 行会被标为 dead 且不再投递。0 表示关闭。
+  // 存在时间超过该值（毫秒）的 pending 行会被标为 dead，不再投递。0 表示关闭。
   int64_t outbox_ttl_ms{120000};
 };
 

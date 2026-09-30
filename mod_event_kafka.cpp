@@ -124,7 +124,7 @@ namespace mod_event_kafka {
             cfg.outbox_max_rows = globals.outbox_max_rows > 0 ? globals.outbox_max_rows : 100000;
             cfg.message_timeout_ms = globals.message_timeout_ms > 0 ? globals.message_timeout_ms : 30000;
             cfg.enable_idempotence = globals.enable_idempotence != 0;
-            // 0 表示关闭过期。负值不是已配置取值；使用默认值。
+            // 0 表示关闭过期；负值视为未配置，使用默认值。
             cfg.outbox_ttl_ms = globals.outbox_ttl_ms < 0 ? 120000 : globals.outbox_ttl_ms;
 
             pipeline_.reset(new event_kafka::KafkaPipeline(cfg));
@@ -153,7 +153,7 @@ namespace mod_event_kafka {
                 return;
             }
 
-            // 深拷贝进入流水线（payload 的 string 构造函数会复制）；入队尝试之后释放 FS 缓冲区。
+            // 深拷贝后送入流水线（构造 payload 字符串时即完成复制）；尝试入队之后释放 FS 缓冲区。
             std::string payload(event_json);
             std::string key = uuid ? std::string(uuid) : std::string();
             std::string call_uuid = key;
@@ -226,8 +226,8 @@ namespace mod_event_kafka {
                 }
 
             } else {
-                // 订阅全部交换机事件（任意子类）
-                // 在用户数据中保存指向自身的指针
+                // 订阅全部 FreeSWITCH 事件（任意子类）
+                // 将指向发布器的指针存入用户数据
                 if (switch_event_bind_removable(modname, SWITCH_EVENT_ALL, SWITCH_EVENT_SUBCLASS_ANY, event_handler,
                                                 static_cast<void*>(&_publisher), &_node)
                     != SWITCH_STATUS_SUCCESS) {
@@ -238,7 +238,7 @@ namespace mod_event_kafka {
             }
 
 
-            // 创建模块接口注册
+            // 创建并注册模块接口
             *module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Module loaded completed\n");
@@ -246,13 +246,13 @@ namespace mod_event_kafka {
         };
 
         void Shutdown() {
-            // 发送终止消息
+            // 通知发布器终止
             _publisher.Shutdown();
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Shutdown requested, flushing publisher\n");
         }
 
         ~KafkaModule() {
-            // 取消订阅交换机事件
+            // 取消订阅 FreeSWITCH 事件
             if (profile.event_subscriptions > 0 ) {
                 for (int i = 0; i < profile.event_subscriptions; i++) {
                     switch_event_unbind(&(profile.event_nodes[i]));
@@ -265,7 +265,7 @@ namespace mod_event_kafka {
 
     private:
 
-        // 将事件分发给发布器
+        // 把事件分发给发布器
         static void event_handler(switch_event_t *event) {
             try {
                 KafkaEventPublisher *publisher = static_cast<KafkaEventPublisher*>(event->bind_user_data);

@@ -2,7 +2,7 @@
 # 由 https://www.gitignore.io 生成
 
 ### C++ ###
-# 前置文件
+# 依赖文件
 *.d
 
 # 已编译的目标文件
@@ -62,7 +62,7 @@ cmake-build-debug/
 .vscode
 
 
-# 发行物
+# 发行包
 *.deb
 
 # vagrant
@@ -76,3 +76,7 @@ id_rsa
 id_rsa.*
 reports/
 **/smoke-*.txt
+
+# Python 缓存
+__pycache__/
+*.pyc

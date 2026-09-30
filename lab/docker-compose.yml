@@ -1,13 +1,13 @@
-# 仅限实验室 — Phase1 单节点 KRaft + toxiproxy（3 个入口端口）。
+# 仅限实验室：Phase1 单节点 KRaft + toxiproxy（3 个入口端口）。
 # 客户端必须只使用 toxiproxy 端口。
 # Bootstrap：127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094
 #
-# 宿主机网络说明：本机曾把 iptables-legacy 的 FORWARD 策略设为 DROP，
-# 从而中断了 bridge 上的容器间流量。启动前请确保 FORWARD 为 ACCEPT：
+# 宿主机网络说明：本机的 iptables-legacy FORWARD 策略曾为 DROP，
+# 导致 bridge 网络上的容器间通信中断。启动前请确保 FORWARD 为 ACCEPT：
 #   sudo iptables-legacy -P FORWARD ACCEPT
 #
 # Phase1：一个 broker；三个 toxiproxy 前端都指向同一个 EXTERNAL
-# 监听器，以便 QA 禁用 kafka1/2/3 来模拟完全断开。
+# 监听器，这样 QA 可以禁用 kafka1/2/3 来模拟完全断开。
 # 3 broker 集群推迟。
 
 services:

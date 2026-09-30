@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 快拨测：bgapi + 短等待（避免 park 路径长时间 NO_ANSWER 阻塞）。
-# 仓库根目录：lab/dialtest_fast.sh [次数]
-# 共享机绝对路径仍可用：/workspace/lab-mod-event-kafka/dialtest_fast.sh
+# 快拨测：bgapi + 短等待（避免 park 路径因长时间 NO_ANSWER 而阻塞）。
+# 在仓库根目录执行：lab/dialtest_fast.sh [次数]
+# 共享机上的绝对路径仍可用：/workspace/lab-mod-event-kafka/dialtest_fast.sh
 set -euo pipefail
 COUNT="${1:-1}"
 FS_CONTAINER="${FS_CONTAINER:-lab-freeswitch}"

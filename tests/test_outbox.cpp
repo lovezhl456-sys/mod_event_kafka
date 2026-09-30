@@ -193,7 +193,7 @@ static void test_safe_unload() {
       CHECK(pipe.enqueue(std::string("{\"n\":") + std::to_string(i) + "}", "k", "call-u", id, err));
       ids.push_back(id);
     }
-    // 即使 produce 失败，也让 worker 把内存队列写入 outbox
+    // 即使 produce 失败，也要让 worker 把内存队列写入 outbox
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     pipe.stop();
     pipe.stop();  // 幂等
@@ -309,7 +309,7 @@ static event_kafka::OutboxRecord make_row(const std::string& id, const std::stri
   return r;
 }
 
-// U-TTL：启用 TTL 时把旧行打成死信，且不再把它们留在可投递（due）集合里；
+// U-TTL：启用 TTL 时把旧行置为死信，且不再把它们留在可投递（due）集合里；
 // TTL 为 0 时仍返回旧行供 produce。年龄 == TTL 时保留（> 而不是 >=）。
 static void test_outbox_ttl() {
   const int64_t ttl = 120000;
@@ -344,7 +344,7 @@ static void test_outbox_ttl() {
   CHECK(box.stats().dead == 1);
   CHECK(box.stats().pending == 2);
 
-  // in-flight 行留在 ACK 路径上。过期不会删除它们，也不会把它们打成死信。
+  // in-flight 行仍走 ACK 路径。过期处理既不会删除它们，也不会把它们置为死信。
   auto inflight = make_row("ttl-inflight", "{\"n\":1}", now - ttl - 50);
   CHECK(box.insert_pending(inflight, err));
   CHECK(box.mark_in_flight("ttl-inflight", err));
@@ -354,7 +354,7 @@ static void test_outbox_ttl() {
   CHECK(box.mark_acked("ttl-inflight", err));
   CHECK(!box.get("ttl-inflight", got));
 
-  // 超过 TTL 之后重试退回 pending 的行会被过期，且不再进入可投递（due）集合。
+  // 超过 TTL 之后因重试退回 pending 的行会被置为过期，不再进入可投递（due）集合。
   auto retry = make_row("ttl-retry", "{\"n\":2}", now - ttl - 10);
   CHECK(box.insert_pending(retry, err));
   CHECK(box.mark_in_flight("ttl-retry", err));
@@ -413,7 +413,7 @@ static void test_expired_does_not_block_new_work() {
   CHECK(box.get("fresh", got));
   CHECK(got.state == event_kafka::OutboxState::Pending);
 
-  // 仍存活的行单独占满 outbox 时，仍然拒绝。
+  // 仅由仍存活的行占满 outbox 时，照样拒绝插入。
   auto extra = make_row("extra", "x", now);
   CHECK(!box.insert_pending(extra, err));
   CHECK(err.find("capacity") != std::string::npos);

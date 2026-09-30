@@ -2,23 +2,23 @@
 	<settings>
 		<param name="bootstrap-servers" value="localhost:9092"/>
 		<param name="topic-prefix" value="topic_prefix"/>
-		<param name="topic" value="" />  <!-- 设置 topic-prefix 或 topic 之一；若两者都定义，则使用 topic 的值。 -->
-		<param name="username" value="" /> <!-- 仅当 Kafka 集群启用了 SASL 时设置 -->
+		<param name="topic" value="" />  <!-- topic-prefix 与 topic 设置其一即可；两者都设置时以 topic 为准。 -->
+		<param name="username" value="" /> <!-- 仅当 Kafka 集群启用 SASL 时才需设置 -->
 		<param name="password" value="" />
 		<param name="buffer-size" value="16" /> 
 		<param name="compression" value="snappy"/>
-		<param name="event-filter" value=""/> <!-- 若需过滤，设为合法的事件名列表。默认空值表示不过滤任何事件 -->
-		<!-- 增量的可靠性 / 安全配置。省略的键使用模块默认值。
+		<param name="event-filter" value=""/> <!-- 如需过滤，设为合法的事件名列表。默认留空，表示不过滤任何事件 -->
+		<!-- 新增的可选配置：可靠性 / 安全。省略的键使用模块默认值。
 		     实验室拨测示例（toxiproxy bootstrap、CHANNEL_* 过滤）：lab/event_kafka.fs.conf.xml -->
 		<param name="outbox-path" value="/var/lib/freeswitch/event_kafka_outbox.db"/>
 		<param name="mem-queue-max" value="10000"/>
 		<param name="outbox-max-rows" value="100000"/>
-		<!-- 超过此时长的 pending 行会被标为 dead（expired_ttl）且不再投递。
-		     0 表示关闭。默认 120000（2 分钟）。TTL 以内的中断在 Kafka 恢复后仍会排空；无需 reload。 -->
+		<!-- 存在时间超过该值（毫秒）的 pending 行会被标为 dead（expired_ttl），不再投递。
+		     0 表示关闭。默认 120000（2 分钟）。时长在 TTL 以内的中断，Kafka 恢复后仍会排空，无需 reload。 -->
 		<param name="outbox-ttl-ms" value="120000"/>
 		<param name="message-timeout-ms" value="30000"/>
 		<param name="enable-idempotence" value="1"/>
-		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL；空 = 自动 -->
+		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL；留空 = 自动选择 -->
 		<param name="ssl-ca-location" value=""/>
 	</settings>
  </configuration>

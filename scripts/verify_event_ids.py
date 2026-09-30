@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""核对实验室验收中注入的与已消费的 x-fs-event-id 集合。
+"""核对实验室验收中已注入与已消费的 x-fs-event-id 集合。
 
 用法：
   scripts/verify_event_ids.py reports/<run-id>/
 
-该目录中的预期文件（见 docs/TEST-PLAN.md §3.3）：
+该目录中应包含的文件（见 docs/TEST-PLAN.md §3.3）：
   injected_ids.txt
   consumed_ids.txt
   可选：rejected_ids.txt、outbox_snapshot.csv
 
-退出码：0 成功 | 1 集合不匹配 | 2 顺序失败 | 3 产物损坏
+退出码：0 成功 | 1 集合不匹配 | 2 顺序检查失败 | 3 产物损坏
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def main() -> int:
                 except (KeyError, ValueError):
                     continue
                 by_call[cu].append((created, row["event_id"]))
-        # consumed_dedup 中的首次出现顺序
+        # 各 event_id 在 consumed_dedup 中首次出现的位置
         first_pos = {}
         for i, eid in enumerate(consumed):
             if eid not in first_pos:
