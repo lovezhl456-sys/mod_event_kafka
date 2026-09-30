@@ -2,12 +2,12 @@
 
 > **文档性质：** 草案。将 Kafka / 网络 / 容量 / TTL / 进程类故障映射到 `docs/TEST-PLAN.md` 的 L-xx 与验收门。  
 > **诚实口径：** 仅当 `docs/STATUS.md` / `docs/TEST-PLAN.md` 明确写为 **PASS** 时，才标为「已 empirically」。其余一律「文档草案 / 未 empirically」。候选补丁 `0001` = **NOT_VERIFIED**（反面参考），不得借本文件宣称已验证。  
-> **契约来源：** `docs/DESIGN.md`、`docs/RELIABILITY.md`。具体的 toxiproxy / docker / FS 命令由安装软件大师维护。FS-01、FS-09 已附上断流脚本；其余场景仍只写概要意图。  
+> **契约来源：** `docs/DESIGN.md`、`docs/RELIABILITY.md`。具体的 toxiproxy / docker / FS 命令由安装软件大师维护。FS-01、FS-09 已附上断流脚本；FS-11 附有实验室草案步骤（**文档草案 / 未 empirically**，R1 尚未跑过）；其余场景仍只写概要意图。  
 > **实验室拓扑（Phase1）：** 单节点 KRaft + 3 个 toxiproxy 前端（`19092–19094`）均指向同一 broker。禁用全部代理 = 客户端完全断开；真实 3 broker / ISR / 滚动重启仍推迟。
 
-FS-01、FS-09 的「如何注入」已附上实验室断流命令（`toxiproxy_cut_restore.sh`，短断 35s / 超 TTL 断连 150s）。其余场景仍只有概要意图，待有真实命令后再补。操作步骤见 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md)；拓扑见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md)。
+FS-01、FS-09 的「如何注入」已附上实验室断流命令（`toxiproxy_cut_restore.sh`，短断 35s / 超 TTL 断连 150s）。FS-11 在 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md) §10 写了草案命令（`cleanup.policy=compact` 的 topic 加上 null key，期望 broker 错误 **+87** `INVALID_RECORD`）。该节 **尚未 empirically**，也 **不是** 断流脚本能复现的症状。其余场景仍只有概要意图，待有真实命令后再补。操作步骤见 [DRILL-RUNBOOK.md](DRILL-RUNBOOK.md)；拓扑见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md)。
 
-`docs/STATUS.md` 记录的 L-16 证据目录是 `reports/l16-abc-20260925-215439/`。下文引用的 `l16a/`、`l16b/`、`l16c/` 是该目录下的子目录，与 STATUS 记录的是同一次运行，不另立证据根路径。验收门一律使用 `scripts/verify_event_ids.py`。
+`docs/STATUS.md` 记录的 L-16 证据目录是 `reports/l16-abc-20260925-215439/`。下文引用的 `l16a/`、`l16b/`、`l16c/` 是该目录下的子目录，与 STATUS 记录的是同一次运行，不另立证据根路径。断流/断连类场景的验收门使用 `scripts/verify_event_ids.py`。FS-11 的验收门是 broker **+87** `INVALID_RECORD` 加上 topic 配置能解释拒收原因；不要用该脚本的集合相等，也不要用短断日志，代替这一门。
 
 ---
 
@@ -157,6 +157,30 @@ FS-01、FS-09 的「如何注入」已附上实验室断流命令（`toxiproxy_c
 
 ---
 
+### FS-11 Err-87 INVALID_RECORD（云 Kafka 升级后 broker 校验拒收）
+
+> **文档草案 / 未 empirically。** R1 尚未在实验室跑过。本文不宣称生产验证。  
+> 生产侧看到的 `[ERR] mod_event_kafka.cpp:197 Message delivery failed Err-87` 是 **broker 错误码 +87**，名字是 `INVALID_RECORD`（记录被 broker 校验拒绝）。旧版 librdkafka 若错误表里没有这个码，`rd_kafka_err2str` 会打成 `Err-87?`（问号表示库不认识该码，数值仍是 **+87**）。  
+> 这与 librdkafka **本地**错误 **-187** `ALL_BROKERS_DOWN` 不是同一个码。**-187** 属于断连/断流一类，FS-01 / FS-09 的 `lab/toxiproxy_cut_restore.sh` 短断或超 TTL 断连覆盖的是这一类。短断证据不得当作 FS-11 通过。
+
+| 字段 | 内容 |
+|------|------|
+| **场景 ID / 名称** | FS-11 / Err-87 INVALID_RECORD（云 Kafka 升级后 broker 校验拒收） |
+| **如何注入** | **文档草案。** 必须注入 **broker 校验拒收**，让 broker 返回 **+87** `INVALID_RECORD`。禁止用 `lab/toxiproxy_cut_restore.sh`（短断 35s / 超 TTL 断连 150s）代替：那只制造客户端断连，对应 **-187** `ALL_BROKERS_DOWN`，打不出本场景要的 **+87**。**R0：** FS **1.6** 实验室镜像 + Kafka 3.x/KRaft（与云上较新 broker 同类；可用现有 `apache/kafka:3.8.1`，bootstrap 仍只走实验室 toxiproxy，禁止指向生产/云端地址）。加载 **outbox 之前**、会在 `dr_msg_cb` 打印 `Message delivery failed` 的旧 `mod_event_kafka`（引入 outbox 之前的源码里，该日志在 `mod_event_kafka.cpp` 约第 197 行）。现有 `lab-freeswitch:1.10.12-kafka` 与当前 master 的 outbox 模块 **不是** 这条路径。**R1（主路径）：** 新建 topic，`cleanup.policy=compact`；制造 **null key**（事件没有 `Channel-Call-UUID`，或在旧模块实验室副本里强制把 key 指针设为 NULL）。compact topic 不接受 null key 时，broker 在校验阶段拒收。期望 FS 日志出现 `Message delivery failed`，且错误文本是 **+87** / `INVALID_RECORD`（旧库可为 `Err-87?`）。**R2（对照）：** 同一条发送路径，但 topic 为 `cleanup.policy=delete`，或者 key 始终非空。对照 **不得** 出现 **+87**。**R3（可选）：** 收紧 `message.timestamp.*.max.ms`（新 broker 上常见 `message.timestamp.before.max.ms` 与 `message.timestamp.after.max.ms`），作为第二条 `INVALID_RECORD` 路径；仍是草案，未跑。分步命令见 `docs/DRILL-RUNBOOK.md` §10。 |
+| **预期模块行为** | 走旧模块的投递报告回调 `dr_msg_cb`：投递失败，日志为 `Message delivery failed` 后接 `rd_kafka_err2str` 的文本。broker **不接受** 该记录，被拒的消息不应出现在 topic 里。这是校验拒收，不是网络中断：链路仍通，失败原因是记录本身。旧库不认识 **+87** 时，同一条日志里的文本是 `Err-87?`，仍表示 broker **+87** `INVALID_RECORD`。**-187** `ALL_BROKERS_DOWN`（断流/断连，常见文案与 “All broker connections are down” 同类）不是本场景的预期日志。当前 master 使用 outbox 流水线（`KafkaPipeline::on_delivery`），**不会**打出 `mod_event_kafka.cpp:197` 的 `Message delivery failed`。本场景要复现的是旧模块 / FS 1.6 实验室路径上的那一行；在当前 master 上即使 broker 同样拒收，日志形态也不同，不能拿 master 的 outbox 日志冒充这条生产症状。旧模块没有 outbox，也不要假设消息头里有 `x-fs-event-id`。 |
+| **验收门** | **文档草案 / 未 empirically**（R1 未跑，不得标 PASS，不宣称生产验证）。将来判通过时须同时满足：固定命令能重复打出旧模块 `Message delivery failed`，且错误是 broker **+87** / `INVALID_RECORD`（旧库文本 `Err-87?` 可以，但必须能对应 **+87**）；证据目录里的 topic 配置 / broker 拒收原因能解释该码（优先 `cleanup.policy=compact` + null key）；R2 对照不出现 **+87**；写明路径是 **无 outbox 的旧模块**。只有一行 `Err-87?`、没有 broker 侧原因说明，不算证据齐。`lab/toxiproxy_cut_restore.sh` 的短断/断连，以及任何 **-187** `ALL_BROKERS_DOWN` 日志，**不得**作为 FS-11 PASS。不要用 `scripts/verify_event_ids.py` 的「注入集合等于消费集合」代替本门：被拒记录本来就不进 topic。 |
+| **L-xx 覆盖** | **文档草案 / 未 empirically。** TEST-PLAN 里还没有针对 broker `INVALID_RECORD`（**+87**）的 L-xx，本文不新编一条 PASS。L-15（认证/ACL/永久性 produce 错误，状态 PLANNED）是当前 outbox 路径上的另一项，不是本场景的覆盖。FS-01 / L-02 / L-07 / L-16 的断流证据对应断连类 **-187**，同样不是本场景。 |
+| **证据路径** | 占位：`reports/fs11-err87-<ts>/`。目录里至少要有：FS 日志片段（`Message delivery failed`，文本对应 **+87** / `INVALID_RECORD` 或旧库 `Err-87?`）、topic 配置（含 `cleanup.policy`）、实际执行的复现命令、以及一份 broker 侧原因说明（优先写明 compact + null key）。目前没有该目录。仅有 `Err-87?` 一行、缺少 topic 配置与拒收原因的，不能当作本场景证据。 |
+
+**+87 与 -187 对照（不得混用）：**
+
+| 代码 | 名称 | 谁产生 | 和本场景的关系 |
+|------|------|--------|----------------|
+| **+87** | `INVALID_RECORD` | Kafka **broker** 校验拒收 | FS-11 验收必须看到。用户日志里的 `Err-87` / 旧库 `Err-87?` 指的是这个 **正** 错误码 |
+| **-187** | `ALL_BROKERS_DOWN` | librdkafka **本地**错误（断连/断流） | FS-01、FS-09 短断与超 TTL 断连已覆盖的一类。不是 Err-87，不得当作 FS-11 PASS |
+
+---
+
 ## TEST-PLAN 中已规划但未完整跑过的 L-xx
 
 摘自 master `docs/TEST-PLAN.md` §3.2 与 `docs/STATUS.md`「未宣称：L-03–L-15 未完整跑过」：
@@ -201,12 +225,14 @@ FS-01、FS-09 的「如何注入」已附上实验室断流命令（`toxiproxy_c
 | 磁盘/outbox 满 | L-13 | 文档草案 / 未 empirically |
 | 超过 TTL | L-16a/b/c | 已 empirically（STATUS） |
 | 进程杀死恢复 | L-14 / L-06 | 文档草案 / 未 empirically |
+| Err-87 `INVALID_RECORD`（broker **+87** 校验拒收） | （无对应 L-xx） | 文档草案 / 未 empirically；不是 **-187** `ALL_BROKERS_DOWN` |
 
 ---
 
 ## 维护说明
 
 1. 新场景跑通后：更新本文件对应行的「L-xx 覆盖」与「证据路径」，并同步 `docs/STATUS.md` / `docs/TEST-PLAN.md` 状态列。  
-2. 通过规则以 **event_id 集合** 为准，禁止仅凭「无错误日志」宣称 PASS。  
+2. 断流/断连类通过规则以 **event_id 集合** 为准，禁止仅凭「无错误日志」宣称 PASS。FS-11 以 broker **+87** `INVALID_RECORD` 与 topic 配置为准，见该节。  
 3. Phase1 为单 broker + 三个前端指向同一 broker：FS-01 有效；FS-02/L-04/L-08 需在真实多 broker 环境下跑过后方可宣称。  
-4. 建议后续把 **L-16a/b/c** 正式写入 TEST-PLAN §3.2，避免只记录在 STATUS 中。
+4. 建议后续把 **L-16a/b/c** 正式写入 TEST-PLAN §3.2，避免只记录在 STATUS 中。  
+5. FS-11 在 R1 于 FS 1.6 + 无 outbox 旧模块上重复打出 broker **+87** `INVALID_RECORD`，且 `reports/fs11-err87-<ts>/` 含 topic 配置与 broker 拒收原因之前，保持「文档草案 / 未 empirically」。只有 `Err-87?` 一行，或只有断流产生的 **-187** `ALL_BROKERS_DOWN`，都不算通过。不要把 **+87** 与 **-187** 写成同一个错误。

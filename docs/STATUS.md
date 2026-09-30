@@ -29,6 +29,7 @@
 - L-03–L-15 未完整跑过。
 - 未经生产验证。
 - 候选补丁 0001 = **NOT_VERIFIED**（仅作反面参考）。不得将其标为已通过生产验证。
+- FS-11（broker `INVALID_RECORD` / **+87**，旧模块日志 `Message delivery failed`）只有文档草案，R1 未跑，不得标 PASS。断连类 **-187** `ALL_BROKERS_DOWN` 不是这个错误。
 
 ## 客户端 bootstrap（实验室健康时）
 仅经 toxiproxy：`127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094`。
