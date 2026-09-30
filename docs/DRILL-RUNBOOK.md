@@ -2,10 +2,10 @@
 
 > 目标：在本机实验室上按固定步骤复现「短断自愈 / 超 TTL 过期 / 恢复后新呼叫」。  
 > §0–§9 的命令均取自本机已跑通的流程。参数名、`x-fs-event-id`、状态字面量保持英文。  
-> §10（FS-11）是 **文档草案 / 未 empirically**：命令尚未跑通，不得当成已 PASS，也不宣称生产验证。  
+> §10（FS-11）记录 2026-09-30 已跑通的 R1/R2：**已 empirically（旧无 outbox + FS 1.10.x lab）**。生产目标仍是 FS 1.6，这次没有在 FS 1.6 上跑，也不宣称生产验证。  
 > 本文步骤均在仓库根目录执行，主要命令使用相对路径（`lab/toxiproxy_cut_restore.sh`、`lab/dialtest_fast.sh`、`lab/dialtest_originate.sh`）。共享实验室机器上仍可用绝对路径 `/workspace/lab-mod-event-kafka/…`（脚本在该目录根下，不带 `lab/` 前缀）。对照见 [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md) §2.1。
 
-对应故障场景：短断是 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-01；超 TTL 与恢复后新呼叫是 FS-09。§10 是 FS-11（broker **+87** `INVALID_RECORD`）的草案，不要用 §3 / §4 的断流脚本去跑它。
+对应故障场景：短断是 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-01；超 TTL 与恢复后新呼叫是 FS-09。§10 是 FS-11（broker **+87** `INVALID_RECORD`），R1/R2 已在 FS 1.10.x + 旧模块上 PASS。不要用 §3 / §4 的断流脚本去跑它。
 
 ## 0. 前置检查
 
@@ -150,9 +150,9 @@ sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
 | 短断自愈 | L-02 / L-07 / L-16a | `reports/l02-l07-fs-20260925-133618/`、`reports/l16-abc-20260925-215439/l16a` |
 | 超 TTL 转死信 | L-16b | `reports/l16-abc-20260925-215439/l16b` |
 | 恢复后新呼叫 | L-16c | `reports/l16-abc-20260925-215439/l16c` |
-| FS-11 草案（R1 未跑） | broker **+87** `INVALID_RECORD` | （无；占位 `reports/fs11-err87-<ts>/`） |
+| FS-11 R1/R2 | broker **+87** `INVALID_RECORD`（FS 1.10.x + 旧模块，不是 FS 1.6） | `reports/fs11-err87-20260930-154534/` |
 
-本手册 §10 已写出 FS-11 的草案步骤，状态仍是「文档草案 / 未 empirically」，没有证据目录，勿与已 PASS 的 L-16 结论混淆。尚未逐步展开的项：单入口 disable、延迟/带宽 toxic、杀 broker 进程、磁盘写满等。需要时再扩充脚本。
+本手册 §10 记录 FS-11 的 R1/R2，证据在 `reports/fs11-err87-20260930-154534/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-20260930-154534/`）。这是 FS 1.10.x + 无 outbox 旧模块，不是 FS 1.6，也不要和已 PASS 的 L-16 断流结论混成同一个错误。尚未逐步展开的项：单入口 disable、延迟/带宽 toxic、杀 broker 进程、磁盘写满，以及 FS-11 的可选 R3（`message.timestamp.*.max.ms`）。需要时再扩充脚本。
 
 ## 9. 安全提醒
 
@@ -161,168 +161,113 @@ sg docker -c 'docker rm -f lab-freeswitch lab-toxiproxy lab-kafka-1'
 - 本文不宣称已在生产环境验证。  
 - §10 复现的是实验室 Kafka 3.x 上的 broker 校验拒收，不是把模块指到云端 Kafka。
 
-## 10. FS-11 Err-87 `INVALID_RECORD`（文档草案 / 未 empirically）
+## 10. FS-11 Err-87 `INVALID_RECORD`（已 empirically：旧无 outbox + FS 1.10.x lab）
 
-> **整节都是文档草案。** R1 尚未跑过，不得标 PASS，不宣称生产验证。  
+> **R0/R1/R2 已于 2026-09-30 PASS。** 证据目录 `reports/fs11-err87-20260930-154534/`（实验室机器 `/workspace/mod_event_kafka-fix/reports/fs11-err87-20260930-154534/`）。`reports/` 不入库，与 L-16 相同。  
+> **不是**「已在 FS 1.6 实证」。生产目标仍是 FS 1.6；这次用的是镜像 `lab-freeswitch:1.10.12-kafka`，二进制报告 FreeSWITCH **1.10.7-dev**。未经生产验证。  
 > 场景定义见 [FAULT-SCENARIOS.md](FAULT-SCENARIOS.md) 的 FS-11。  
-> **不要**执行 `lab/toxiproxy_cut_restore.sh`（也不要执行共享机上的 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh`）来做本节。短断 35s 与超 TTL 断连 150s 制造的是客户端断连。
+> **不要**执行 `lab/toxiproxy_cut_restore.sh`（也不要执行共享机上的 `/workspace/lab-mod-event-kafka/toxiproxy_cut_restore.sh`）来做本节。短断 35s 与超 TTL 断连 150s 制造的是客户端断连，对应 **-187** `ALL_BROKERS_DOWN`，不是 **+87**。
 
-用户日志里的 `Err-87` 是 Kafka **broker** 错误码 **+87**，名字是 `INVALID_RECORD`：记录没通过 broker 校验，被拒绝。旧版 librdkafka 的错误表里若没有这个码，投递报告里会印成 `Err-87?`。问号只表示库不认识该码，数值仍是 **+87**。
+用户日志里的 `Err-87` 是 Kafka **broker** 错误码 **+87**，名字是 `INVALID_RECORD`。旧版 librdkafka 不认识该码时会印成 `Err-87?`。本次实验室打出的是同一码的具名文本：
+
+```text
+[ERR] mod_event_kafka.cpp:197  Message delivery failed Broker: Broker failed to validate record
+```
+
+独立冒烟：`DR_FAIL err=87 (Broker: Broker failed to validate record) topic=fs_events_compact key_len=0`。
 
 librdkafka **本地**错误 **-187** 的名字是 `ALL_BROKERS_DOWN`，属于断连/断流。FS-01 等短断演练覆盖的是这一类。它不是 Err-87。书写时保持两个码分开：**+87** 是 broker 校验拒收，**-187** 是断连。不要把 `Err-87` 解释成 `ALL_BROKERS_DOWN`。
 
-| 代码 | 名称 | 本节是否接受为通过 |
-|------|------|--------------------|
-| **+87** | `INVALID_RECORD` | 接受。日志文本须是 `INVALID_RECORD`，或旧库的 `Err-87?`（对应 **+87**），并且目录里有 broker 侧原因 |
-| **-187** | `ALL_BROKERS_DOWN` | 不接受。短断/断连日志归 FS-01 / FS-09 |
+| 代码 | 名称 | 本次运行 |
+|------|------|----------|
+| **+87** | `INVALID_RECORD` | R1 看到的就是这个码。文本是 `Broker: Broker failed to validate record`（`err=87`） |
+| **-187** | `ALL_BROKERS_DOWN` | 本次没有出现。短断/断连日志归 FS-01 / FS-09，不能当作 FS-11 PASS |
 
-旧模块（引入 outbox 之前）在 `dr_msg_cb` 里打印失败，源码约在 `mod_event_kafka.cpp` 第 197 行：
+已通过的模块是 upstream **旧模块、无 outbox**。失败日志在 `dr_msg_cb`、`mod_event_kafka.cpp:197`。加载日志是第 87 行的 `KafkaEventPublisher Initialising...`，以及 `Subscribed to ALL events`。当前 master 走 outbox 流水线，加载时会写 `Initialising (outbox pipeline)`，投递报告在 `KafkaPipeline::on_delivery`，**不会**打出第 197 行。用当前 master 的 `.so` 做同样的 topic 实验，不能宣称已经复现了这一行。
 
-```text
-Message delivery failed <rd_kafka_err2str>
-```
+### 10.1 这次实际用的 FS（R0 PASS）与 FS 1.6 阻塞
 
-FreeSWITCH 日志形态与生产症状一致时，类似：
+`RESULT.txt`：
 
-```text
-[ERR] mod_event_kafka.cpp:197 Message delivery failed Err-87
-```
+- R0 FS+Kafka：PASS
+- 版本字符串：`FreeSWITCH version: 1.10.7-dev+git~20210825T173719Z~dd2411336f~64bit`（git `dd24113`，2021-08-25 17:37:19Z 64bit）
+- 镜像标签：`lab-freeswitch:1.10.12-kafka`（二进制报告 1.10.7-dev）
+- 模块：upstream OLD（无 outbox），`cpp:197` `dr_msg_cb`
+- 源码在实验室机器 `/workspace/mod_event_kafka-fix/upstream/`，按 FS 1.10.x 头文件（`/workspace/lab-mod-event-kafka/fs/prefix`）编译后装入容器 `/usr/local/freeswitch/mod/mod_event_kafka.so`。本仓库不提交该 `.so`
 
-旧库不认识 **+87** 时，同一位置打印 `Err-87?`。`Err-87` 与 `Err-87?` 都表示 broker **+87** `INVALID_RECORD`，并且证据目录里还要有 broker 侧原因。字符串里的 `87` 不是 **-187**。
+`fs16-blocker.txt`（FS 1.6 尝试失败，因此 **没有** FS 1.6 实证）：
 
-当前 master 走 outbox 流水线，投递报告在 `KafkaPipeline::on_delivery`，**不会**打出上面这一行。本节的通过日志以 **FS 1.6 + 无 outbox 旧模块** 为准。在当前 master 上做同样的 topic 实验，不能用来宣称已经复现了第 197 行。
+- 拉取过 `praekeltfoundation/freeswitch:1.6`（FreeSWITCH 1.6.20，Debian Jessie）
+- 镜像里没有 freeswitch-dev / `/usr/include/freeswitch` 头文件
+- 镜像里没有 librdkafka；Jessie 的 apt 源已 EOL（要归档镜像并重编才行）
+- 实验室现成头文件与前缀是 FS 1.10.12（bookworm），与 1.6 ABI 不兼容
+- 从源码做一整套 FS 1.6 工具链不在这次运行里
+- 决定：继续用 FS 1.10.12 镜像 + 旧 upstream `.so`（同一条 cpp:197 null-key 路径）
+- 生产目标仍是 FS 1.6。Err-87 的拒收是模块与 broker 的行为，不是 FS 大版本专有。文档不得写成「已在 FS 1.6 实证」
 
-### 10.1 前置（R0）
+Kafka 仍是 `apache/kafka:3.8.1`，bootstrap 只走 `127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094`。代理保持启用。本节不 disable toxiproxy。
 
-- FreeSWITCH **1.6** 实验室镜像。仓库里现有的 `lab-freeswitch:1.10.12-kafka` 是 1.10 演练镜像，不能直接当作本场景的 FS。镜像名由安装组填入下面的占位。
-- 加载会打印 `Message delivery failed` 的 **outbox 之前** 的 `mod_event_kafka.so`。确认加载的是这份旧模块之后再做 R1。
-- Kafka 3.x / KRaft。实验室可继续用 `apache/kafka:3.8.1`（`lab-kafka-1`）。bootstrap 仍只能是 `127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094`。
-- 代理保持 `enabled=true`。本节不禁用 toxiproxy。
+### 10.2 已跑通的复现脚本
 
-Kafka + toxiproxy 的启动方式与 §1 相同（`cd lab && sg docker -c 'docker compose up -d'`）。FS 1.6 容器的启动命令按现场镜像替换，下面只保留要核对的事项：
-
-```bash
-# 占位：换成现场的 FS 1.6 镜像名与安装前缀
-# sg docker -c 'docker run -d --name lab-freeswitch --network host <fs-1.6-image> ...'
-
-sg docker -c 'docker exec lab-freeswitch <fs_cli> -x "module_exists mod_event_kafka"'
-# 期望：true
-# 再确认日志里的模块路径是旧模块：出现 Message delivery failed 的二进制，
-# 而不是 "KafkaEventPublisher Initialising (outbox pipeline)..."
-```
-
-### 10.2 创建 compact topic（R1）
-
-专用 topic，避免改动已有演练用的 `fs_events`。
+证据目录里的 `reproduce.sh` 就是这次执行的脚本。在实验室机器上：
 
 ```bash
-sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --create --if-not-exists \
-  --topic fs_events_err87 --partitions 3 --replication-factor 1 \
-  --config cleanup.policy=compact"
-
-sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server localhost:9092 --entity-type topics \
-  --entity-name fs_events_err87 --describe"
+bash /workspace/mod_event_kafka-fix/reports/fs11-err87-20260930-154534/reproduce.sh
 ```
 
-`--describe` 的输出里应能看到 `cleanup.policy=compact`。把这段输出存进证据目录（见 §10.5）。
+脚本要点（与证据一致，便于对照；不要改去调用 `toxiproxy_cut_restore.sh`）：
 
-### 10.3 把旧模块指到该 topic
+1. `cd /workspace/lab-mod-event-kafka`，`docker compose up -d`
+2. 创建两个 topic，都是 partitions=1、RF=1：
+   - `fs_events_compact`，`--config cleanup.policy=compact`
+   - `fs_events_delete`，`--config cleanup.policy=delete`
+3. 用 `lab-freeswitch:1.10.12-kafka` 起 FS（`--network host`），把证据目录里编好的旧 `.so` 拷进 `/usr/local/freeswitch/mod/mod_event_kafka.so`
+4. **R1：** 拷入 compact 配置（证据目录 `conf/event_kafka.conf.xml`），`fsctl shutdown` 后再 `docker start`，让旧模块重新加载。`event-filter` 为空，日志是 `Found 0 subscriptions` / `Subscribed to ALL events`，topic 为 `fs_events_compact`
+5. **R2：** 记下当时日志长度，换上 delete 配置（`conf/event_kafka.conf.delete.xml`），同样重启。topic 为 `fs_events_delete`。只看这次重启之后的新日志
 
-在 FS 1.6 实际加载的 `event_kafka.conf.xml` 里把 `topic` 指到 `fs_events_err87`（键名保持 `topic`）。`bootstrap-servers` 仍只写三个 toxiproxy 端口。改完后按 FS 1.6 的习惯 `reload mod_event_kafka` 或重启 FS，使旧模块重新建 producer。
+`topic-config.txt` 里两次 `--describe` 分别为 `cleanup.policy=compact` 与 `cleanup.policy=delete`。
 
-```xml
-<param name="bootstrap-servers" value="127.0.0.1:19092,127.0.0.1:19093,127.0.0.1:19094"/>
-<param name="topic" value="fs_events_err87"/>
-```
+### 10.3 R1：compact + 缺少 `Channel-Call-UUID`（PASS）
 
-### 10.4 注入 null key（R1）
+旧模块用 `Channel-Call-UUID` 当 Kafka key。头不存在时 key 指针为 NULL，`rd_kafka_produce` 发出 null key。`cleanup.policy=compact` 的 topic 需要非空 key，才能按 key 留下最新一条；null key 在 broker 校验阶段被拒绝，返回 **+87** `INVALID_RECORD`。
 
-意图：旧模块 `PublishEvent` 用 `Channel-Call-UUID` 当 Kafka key。头不存在时，key 指针为 NULL，`rd_kafka_produce` 发出的是 **null key**。`cleanup.policy=compact` 的 topic 在 broker 校验阶段拒绝 null key，返回 **+87** `INVALID_RECORD`。
+这次没有改源码去强制 null key。模块说明写明：强制 null key 的实验目录编过，但 **R1 没用它**。`event-filter` 为空，启动时的 HEARTBEAT、RE_SCHEDULE，以及不少 CUSTOM/系统事件没有 `Channel-Call-UUID`，于是走出这条路径。
 
-空字符串 key（指针非 NULL、长度为 0）和 null key 不是同一件事。本节以「头不存在 → key 指针为 NULL」为准。不要把「只是空字符串」写成已经 empirically 等价。
+通过时 FS 日志为上面的第 197 行。R1 窗口里 `INVALID_RECORD` 行数是 482。独立冒烟同时记下：`err=87`、`topic=fs_events_compact`、`key_len=0`。
 
-拨测或 `event-filter` 的精确写法现场尚未钉死，下面是占位。成功与否只看 §10.5 的日志和 topic 配置，不看占位命令本身是否原样可跑。
+`broker-reason.txt` 的归因：compact + NULL → err=87；delete + NULL → OK；compact + 非空 key → OK。证据日志里另外两条 `DR_OK`（`key_len=0` 与 `key_len=13`）是这组独立对照的成功侧，不是 R1 的 FS 失败日志。
 
-**占位 A（优先，不改源码）：** 让进入模块的事件没有 `Channel-Call-UUID`。安装组按现场习惯填实，例如把 `event-filter` 订到确认不含该头的事件；若选用 `SWITCH_EVENT_HEARTBEAT` 一类非通话事件，先抓一条 JSON，确认头不存在，再当作 R1 的注入。通话类 `CHANNEL_*` 通常带有 `Channel-Call-UUID`，用它们做 R1 时 key 不是 null，不能期望 **+87**。
+### 10.4 R2：delete topic，同一条 null-key 路径（PASS）
 
-**占位 B（仅当 A 无法去掉该头）：** 在实验室的旧模块副本里，调用 `send()` 时强制 key 为 NULL。该改动只留在 FS 1.6 实验副本上，不要提交进当前 master。通过标准仍然是同一条 `Message delivery failed` 加上 broker **+87**。
+同一旧模块，topic `fs_events_delete`，`cleanup.policy=delete`。`RESULT.txt` 与 R2 日志：delivery-fail = 0，`INVALID_RECORD` = 0。消费抽样里能看到被接受的 `HEARTBEAT` 与 `MODULE_LOAD`。
 
-注入之后在 FS 日志里查找：
+这是「同一路径在 delete 上不出现 **+87**」的对照。对照里如果出现 **-187**，那是另一次断连，既不能充当 R2，也不能充当 R1。
 
-```text
-Message delivery failed
-```
+### 10.5 证据目录里要有的文件
 
-通过时，同一条里的错误文本是 `INVALID_RECORD`，或者旧库的 `Err-87?`。两条都表示 broker **+87**。若文本是 “All broker connections are down” 或错误码为 **-187** `ALL_BROKERS_DOWN`，这是断连，回到 FS-01，不是本节通过。
+`reports/fs11-err87-20260930-154534/`（实验室绝对路径见本节开头）至少包括：
 
-### 10.5 收集证据
+| 文件 | 作用 |
+|------|------|
+| `RESULT.txt` | R0/R1/R2 PASS，FS 版本，以及「FS 1.6 这次没用」 |
+| `broker-reason.txt` | broker 拒收原因：compact 要求非空 key；null key → **+87**；并写明不是 **-187** |
+| `topic-config.txt` | `fs_events_compact` / `fs_events_delete` 的 `cleanup.policy` |
+| `reproduce.sh` | 实际执行的复现命令 |
+| `fs16-blocker.txt` | FS 1.6 镜像为何没能编过旧模块 |
+| 模块说明 | 旧模块 key 路径、第 197 行格式串、R1 未使用强制 null key 补丁 |
+| R1/R2 日志 | 第 197 行，以及 R2 的 0 次失败 |
 
-```bash
-TS=$(date +%Y%m%d-%H%M%S)
-OUT=reports/fs11-err87-$TS
-mkdir -p "$OUT"
+只有一行 `Err-87?`、没有 topic 配置和 `broker-reason.txt`，不算本场景证据齐。本次实验室文本已经是 `Broker: Broker failed to validate record`，并用 `err=87` 对上 **+87**。
 
-# 1) 复现命令：把本节实际执行的命令抄进该文件
-# 2) topic 配置（broker 侧原因的一部分）
-sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server localhost:9092 --entity-type topics \
-  --entity-name fs_events_err87 --describe" | tee "$OUT/topic-config.txt"
+### 10.6 可选 R3（本次未跑）
 
-# 3) FS 日志片段：只保留含 Message delivery failed 的行
-# sg docker -c 'docker logs lab-freeswitch' | rg "Message delivery failed" | tee "$OUT/fs.log.snippet"
-```
+收紧 `message.timestamp.*.max.ms` 仍是另一条可能打出 **+87** 的路径，**没有**出现在这次 PASS 里。不要把 R1 的 compact + null key 写成时间戳窗口。若以后要跑，放在 `cleanup.policy=delete` 的 topic 上，避免和 R1 的原因叠在一起，并在 `broker-reason.txt` 里写时间戳窗口。未跑之前不要给 R3 标 empirically。
 
-目录里还要有一份人工可读的 `broker-reason.txt`，写明：
+### 10.7 本节明确不做的事
 
-- 看到的是 broker **+87** `INVALID_RECORD`（若日志原文是 `Err-87?`，注明这是旧 librdkafka 对 **+87** 的打印）
-- 拒收原因：topic `fs_events_err87` 的 `cleanup.policy=compact`，且该条记录的 key 为 null（没有 `Channel-Call-UUID`，或占位 B 强制 NULL）
-- 明确写一句：本次不是 **-187** `ALL_BROKERS_DOWN`，也没有用断流脚本
-
-只有 `Err-87?` 一行、没有 `topic-config.txt` 和 `broker-reason.txt` 的目录，不算 FS-11 证据齐。在 R1 按上面重复打出 **+87** 之前，本节保持 **文档草案 / 未 empirically**。
-
-### 10.6 对照（R2）
-
-两条对照都可以，做一条即可。对照的期望是：**不**出现 **+87** / `INVALID_RECORD` / `Err-87?`。
-
-**对照 1：** 新建 `cleanup.policy=delete` 的 topic，旧模块改指到它，再用与 R1 相同的 null key 事件发送。
-
-```bash
-sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --create --if-not-exists \
-  --topic fs_events_err87_ctl --partitions 3 --replication-factor 1 \
-  --config cleanup.policy=delete"
-```
-
-**对照 2：** 仍用 `fs_events_err87`（`cleanup.policy=compact`），但事件始终带非空 `Channel-Call-UUID`（正常通话事件）。key 非空时，compact 这条拒收原因不成立。
-
-把对照的 topic 配置和 FS 日志摘要写入 `$OUT/r2-control.txt`。对照里如果出现 **-187**，那是另一次断连，既不能充当 R2「没有 +87」，也不能充当 R1 通过。
-
-### 10.7 可选：收紧时间戳窗口（R3）
-
-仍是草案，未跑。这是第二条可能打出 **+87** `INVALID_RECORD` 的路径，用来和「compact + null key」区分开。优先仍以 R1 为主路径。
-
-在 **delete** 策略的 topic 上收紧 `message.timestamp.*.max.ms`，避免和 R1 的 compact 原因叠在一起。键名随 broker 版本：较新的是 `message.timestamp.before.max.ms` 与 `message.timestamp.after.max.ms`；更老的集群可能仍是 `message.timestamp.difference.max.ms`。下面只说明意图，数值是否被该镜像接受，以现场 `--describe` 为准：
-
-```bash
-sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --create --if-not-exists \
-  --topic fs_events_err87_ts --partitions 1 --replication-factor 1 \
-  --config cleanup.policy=delete"
-
-sg docker -c "docker exec lab-kafka-1 /opt/kafka/bin/kafka-configs.sh \
-  --bootstrap-server localhost:9092 --entity-type topics \
-  --entity-name fs_events_err87_ts --alter \
-  --add-config message.timestamp.before.max.ms=1,message.timestamp.after.max.ms=1"
-```
-
-事件时间戳落在窗口外时，broker 也可能返回 **+87** `INVALID_RECORD`。若要把它当作 FS-11 的证据，`broker-reason.txt` 里要写时间戳窗口，而不是写成 compact + null key。未跑通之前不要标 empirically。
-
-### 10.8 本节明确不做的事
-
-- 不用 `lab/toxiproxy_cut_restore.sh`，也不要 disable `kafka1`/`kafka2`/`kafka3` 来「制造 Err-87」。
-- 不把 **-187** `ALL_BROKERS_DOWN` 的日志放进 FS-11 的通过结论。
+- 不用 `lab/toxiproxy_cut_restore.sh`，也不要 disable `kafka1`/`kafka2`/`kafka3` 来制造 Err-87。
+- 不把 **-187** `ALL_BROKERS_DOWN` 写成 FS-11 通过。
 - 不在当前 master 的 outbox 模块上寻找 `mod_event_kafka.cpp:197`。
+- 不把这次结果写成已在 FS 1.6 上实证。
 - 不把实验室 bootstrap 改成生产或云端 Kafka。
-- 不用 `scripts/verify_event_ids.py` 的集合相等作为本节通过条件。旧模块通常也不带消息头 `x-fs-event-id`。被拒记录不应出现在 topic 中。
+- 不用 `scripts/verify_event_ids.py` 的集合相等作为本节通过条件。旧模块不带消息头 `x-fs-event-id`。R1 被拒的记录不应留在 compact topic 里。
