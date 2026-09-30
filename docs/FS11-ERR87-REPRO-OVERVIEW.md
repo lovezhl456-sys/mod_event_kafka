@@ -148,4 +148,4 @@ bash /workspace/mod_event_kafka-fix/reports/fs11-err87-fs16-20260930-162827/repr
 - [STATUS.md](STATUS.md) — FS-11 已跑结果与证据路径
 - [KAFKA-DEPLOY.md](KAFKA-DEPLOY.md) — 实验室 Kafka / toxiproxy 拓扑
 
-> 仓库 master 上 FAULT / DRILL / STATUS 的 FS-11 段落可能仍写着「主证据为 FS 1.10.x」；以 [PR #10](https://github.com/lovezhl456-sys/mod_event_kafka/pull/10) 更新后的口径为准：主证据为 FS 1.6.20 lab，1.10.x 一轮保留为对照。
+以上文档的 FS-11 段落与本文口径一致：主证据为 FS 1.6.20 lab，1.10.x 一轮保留为对照。
