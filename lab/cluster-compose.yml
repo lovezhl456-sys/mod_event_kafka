@@ -1,0 +1,74 @@
+# Three real combined broker/controllers. Separate ports/project from Phase1.
+x-kafka: &kafka
+  image: apache/kafka:3.8.1
+  networks: [cluster]
+  depends_on:
+    volume-init: {condition: service_completed_successfully}
+  healthcheck:
+    test: [CMD-SHELL, '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1']
+    interval: 5s
+    timeout: 10s
+    retries: 30
+    start_period: 30s
+x-environment: &environment
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9093,INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093,2@kafka2:9093,3@kafka3:9093
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  KAFKA_HEAP_OPTS: -Xmx384M -Xms256M
+services:
+  volume-init:
+    image: apache/kafka:3.8.1
+    user: '0:0'
+    entrypoint: ['/bin/sh', '-c']
+    command: ['chown 1000:1000 /data/1 /data/2 /data/3']
+    volumes: [kafka1-data:/data/1, kafka2-data:/data/2, kafka3-data:/data/3]
+  kafka1:
+    <<: *kafka
+    environment:
+      <<: *environment
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:9092,EXTERNAL://127.0.0.1:29092
+    volumes: [kafka1-data:/tmp/kraft-combined-logs]
+  kafka2:
+    <<: *kafka
+    environment:
+      <<: *environment
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:9092,EXTERNAL://127.0.0.1:29093
+    volumes: [kafka2-data:/tmp/kraft-combined-logs]
+  kafka3:
+    <<: *kafka
+    environment:
+      <<: *environment
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:9092,EXTERNAL://127.0.0.1:29094
+    volumes: [kafka3-data:/tmp/kraft-combined-logs]
+  toxiproxy:
+    image: shopify/toxiproxy:2.1.4
+    command: ['-host', '0.0.0.0', '-config', /config/toxiproxy.json]
+    networks: [cluster]
+    ports: ['127.0.0.1:29092:29092', '127.0.0.1:29093:29093', '127.0.0.1:29094:29094', '127.0.0.1:8475:8474']
+    volumes: ['./cluster-toxiproxy.json:/config/toxiproxy.json:ro']
+    depends_on:
+      kafka1: {condition: service_healthy}
+      kafka2: {condition: service_healthy}
+      kafka3: {condition: service_healthy}
+networks:
+  cluster:
+volumes:
+  kafka1-data:
+  kafka2-data:
+  kafka3-data:
