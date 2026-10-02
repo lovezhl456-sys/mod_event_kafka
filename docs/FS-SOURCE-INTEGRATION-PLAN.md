@@ -1,3 +1,5 @@
+> HISTORICAL DESIGN ONLY. Superseded by the user constraint “不改 FS”. No FS core patch, source bridge, or new header is requested or implemented. See STRICT-CALL-ORDER.md for the current module-only scope.
+
 # FreeSWITCH source integration — open design, not production acceptance
 
 The core retry fix is not the completion of the business source-order task. The previous proposal

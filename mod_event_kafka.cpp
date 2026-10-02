@@ -79,7 +79,7 @@ namespace mod_event_kafka {
         SWITCH_CONFIG_ITEM("enable-idempotence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.enable_idempotence,
                             1, NULL, "enable-idempotence", "librdkafka enable.idempotence"),
         SWITCH_CONFIG_ITEM("require-source-sequence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.require_source_sequence,
-                            0, NULL, "require-source-sequence", "Require contiguous Kafka-Call-Sequence for call events"),
+                            0, NULL, "require-source-sequence", "Deprecated; ignored by FS adapter (durable admission order)"),
         SWITCH_CONFIG_ITEM("security-protocol", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.security_protocol,
                             "", NULL, "security-protocol", "PLAINTEXT/SASL_PLAINTEXT/SASL_SSL/SSL"),
         SWITCH_CONFIG_ITEM("ssl-ca-location", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.ssl_ca_location,
@@ -128,7 +128,7 @@ namespace mod_event_kafka {
             cfg.outbox_max_rows = globals.outbox_max_rows > 0 ? globals.outbox_max_rows : 100000;
             cfg.message_timeout_ms = globals.message_timeout_ms > 0 ? globals.message_timeout_ms : 30000;
             cfg.enable_idempotence = globals.enable_idempotence != 0;
-            cfg.require_source_sequence = globals.require_source_sequence != 0;
+            cfg.require_source_sequence = false; // FS glue always assigns a durable module admission ordinal.
             // 0 表示关闭过期；负值视为未配置，使用默认值。
             cfg.outbox_ttl_ms = globals.outbox_ttl_ms < 0 ? 120000 : globals.outbox_ttl_ms;
 
@@ -140,7 +140,7 @@ namespace mod_event_kafka {
             }
             if (!cfg.require_source_sequence) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
-                    "Kafka ordering mode: durable ADMISSION order only; concurrent FS source order is NOT guaranteed. Configure a verified source adapter before enabling source-sequence mode.\n");
+                    "Kafka ordering mode: durable module ADMISSION order only; earlier FS source order is NOT guaranteed. require-source-sequence is deprecated and ignored by this module.\n");
             }
             _initialized = true;
         }
@@ -167,21 +167,11 @@ namespace mod_event_kafka {
             std::string call_uuid = key;
             std::string event_id;
             std::string err;
-            int64_t source_sequence = -1;
-            const char* sequence_header = switch_event_get_header(event, "Kafka-Call-Sequence");
-            bool valid_sequence = true;
-            if (sequence_header) {
-                const char* end = sequence_header + std::strlen(sequence_header);
-                const auto parsed = std::from_chars(sequence_header, end, source_sequence);
-                valid_sequence = parsed.ec == std::errc{} && parsed.ptr == end && source_sequence >= 0;
-            }
-            const char* event_name = switch_event_get_header(event, "Event-Name");
-            if (globals.require_source_sequence && key.empty() && event_name &&
-                std::strncmp(event_name, "CHANNEL_", 8) == 0) {
-                valid_sequence = false;
-            }
-            if (!valid_sequence) err = "invalid call identity/Kafka-Call-Sequence";
-            const bool ok = valid_sequence && pipeline_->enqueue(payload, key, call_uuid, event_id, err, source_sequence);
+            // The transaction commit is the linearization point. Callback entry time,
+            // Event-Sequence, timestamps and custom headers do not define this order.
+            int64_t assigned_sequence = -1;
+            const bool ok = pipeline_->enqueue(payload, key, call_uuid, event_id, err, -1,
+                                                &assigned_sequence);
             std::free(event_json);
             if (!ok) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
@@ -190,7 +180,8 @@ namespace mod_event_kafka {
                                   (unsigned long long)pipeline_->metrics().rejected_disk_full.load());
             } else {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
-                                  "enqueued event_id=%s key=%s\n", event_id.c_str(), key.c_str());
+                                  "enqueued event_id=%s key=%s admission_sequence=%lld\n", event_id.c_str(), key.c_str(),
+                                  (long long)assigned_sequence);
             }
         }
 

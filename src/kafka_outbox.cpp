@@ -200,7 +200,8 @@ void Outbox::close() {
   if (impl_->lock_fd >= 0) ::close(impl_->lock_fd);
   impl_->lock_fd = -1;
 }
-bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err) {
+bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* assigned_sequence) {
+  if (assigned_sequence) *assigned_sequence = -1;
   std::lock_guard<std::mutex> lock(impl_->mu);
   try {
     Transaction tx(impl_->db);
@@ -287,6 +288,7 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err) {
       q.bind(9, seq);
     q.done();
     tx.commit();
+    if (assigned_sequence) *assigned_sequence = rec.call_uuid.empty() ? -1 : seq;
     return true;
   } catch (const std::exception& e) {
     err = e.what();

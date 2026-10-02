@@ -65,12 +65,14 @@ int main(int argc, char** argv) {
     cfg.outbox_ttl_ms = mode == "ttl" ? 1500 : 0;
     cfg.worker_idle_ms = 5;
     cfg.poll_ms = 5;
-    cfg.require_source_sequence = true;
+    const bool admission_mode = std::getenv("ORDER_ADMISSION") != nullptr;
+    cfg.require_source_sequence = !admission_mode;
     KafkaPipeline p(cfg);
     std::string err;
     if (!p.start(err)) throw std::runtime_error(err);
     std::ofstream status(root / (resume ? "status-resume.jsonl" : "status.jsonl"));
     std::ofstream admissions(root / "admissions.tsv", std::ios::app);
+    std::ofstream assigned(root / "assigned.tsv", std::ios::app);
     std::mutex logmu;
     if (!resume) {
       std::ofstream plan(root / "source-plan.tsv");
@@ -87,13 +89,16 @@ int main(int argc, char** argv) {
         payload += ",\"padding\":\"" + std::string(1500000, 'x') + "\"";
       payload += "}";
       auto begin = Clock::now();
-      bool ok = p.enqueue(payload, key, key, id, e, seq);
+      int64_t ordinal = -1;
+      bool ok = p.enqueue(payload, key, key, id, e, admission_mode ? -1 : seq, &ordinal);
       auto us = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - begin).count();
       {
         std::lock_guard<std::mutex> lock(logmu);
         admissions << id << '\t' << key << '\t' << seq << '\t' << wall_now_ms() << '\t' << us
                    << '\t' << ok << '\t' << e << '\n';
         admissions.flush();
+        assigned << id << '\t' << key << '\t' << ordinal << '\n';
+        assigned.flush();
       }
       if (!ok) ++rejected;
     };

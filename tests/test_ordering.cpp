@@ -308,6 +308,53 @@ void concurrent_stop_admission() {
     }
 }
 
+void admission_ordinals_and_reuse() {
+  const auto path = base + "admission-reuse.db";
+  std::string e;
+  std::set<int64_t> ordinals;
+  std::mutex mu;
+  {
+    Outbox b(path, 1000, 100000);
+    REQUIRE(b.open(e));
+    std::atomic<int> count{0};
+    std::vector<std::thread> ts;
+    for (int t = 0; t < 8; ++t) ts.emplace_back([&, t] {
+      for (int n = t; n < 64; n += 8) {
+        auto r = row("same-call", n);
+        r.call_seq = -1;
+        r.created_at_ms -= n * 1000; // Reversed timestamps must not define order.
+        int64_t assigned = -1;
+        std::string err;
+        if (b.insert_pending(r, err, &assigned)) {
+          std::lock_guard<std::mutex> lock(mu);
+          ordinals.insert(assigned);
+          ++count;
+        }
+      }
+    });
+    for (auto& t : ts) t.join();
+    REQUIRE(count == 64 && ordinals.size() == 64);
+    for (int n = 0; n < 64; ++n) {
+      REQUIRE(ordinals.count(n) == 1);
+      auto due = b.fetch_due(wall_now_ms() + 10000, 100);
+      REQUIRE(due.size() == 1 && due[0].call_seq == n);
+      REQUIRE(b.mark_in_flight(due[0].event_id, e));
+      REQUIRE(b.mark_acked(due[0].event_id, e));
+    }
+  }
+  Outbox b(path, 1000, 100000);
+  REQUIRE(b.open(e));
+  auto late = row("same-call", 500); late.call_seq = -1;
+  int64_t assigned = -1;
+  REQUIRE(b.insert_pending(late, e, &assigned));
+  REQUIRE(assigned == 64); // Idle/restart/reused ID never silently resets the cursor.
+  REQUIRE(!b.insert_pending(late, e, &assigned));
+  REQUIRE(assigned == -1); // Failed admission exposes no committed ordinal.
+  auto after = row("same-call", 501); after.call_seq = -1;
+  REQUIRE(b.insert_pending(after, e, &assigned));
+  REQUIRE(assigned == 65); // Failed transaction did not consume a sequence.
+}
+
 int main() {
   try {
     base = "/tmp/event-kafka-order-" + std::to_string(getpid()) + "/";
@@ -321,6 +368,7 @@ int main() {
     transactional_failures();
     scheduler_upgrade_and_fairness();
     concurrent_stop_admission();
+    admission_ordinals_and_reuse();
     fs::remove_all(base);
     std::cout << "ordering: "
                  "heads/backoff/inflight/dead/gaps/concurrency/restart/ownership/TTL/migration/"

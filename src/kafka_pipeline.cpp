@@ -41,7 +41,8 @@ OutboxStats KafkaPipeline::outbox_stats() const { return outbox_->stats(); }
 
 bool KafkaPipeline::enqueue(const std::string& payload, const std::string& msg_key,
                             const std::string& call_uuid, std::string& event_id_out,
-                            std::string& err, int64_t source_sequence) {
+                            std::string& err, int64_t source_sequence, int64_t* assigned_sequence) {
+  if (assigned_sequence) *assigned_sequence = -1;
   std::lock_guard<std::mutex> lock(lifecycle_mu_);
   event_id_out.clear();
   if (!accept_) {
@@ -63,7 +64,7 @@ bool KafkaPipeline::enqueue(const std::string& payload, const std::string& msg_k
   rec.created_at_ms = wall_now_ms();
   event_id_out = rec.event_id;
   // Success means the event AND its call cursor are durably committed before returning.
-  if (!outbox_->insert_pending(rec, err)) {
+  if (!outbox_->insert_pending(rec, err, assigned_sequence)) {
     metrics_.rejected_disk_full.fetch_add(1);
     return false;
   }

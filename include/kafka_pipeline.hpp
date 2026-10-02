@@ -60,7 +60,7 @@ class KafkaPipeline {
   void stop();
 
   bool enqueue(const std::string& payload, const std::string& msg_key, const std::string& call_uuid,
-               std::string& event_id_out, std::string& err, int64_t source_sequence = -1);
+               std::string& event_id_out, std::string& err, int64_t source_sequence = -1, int64_t* assigned_sequence = nullptr);
 
   // Executed by the sole producer owner, never from inside a delivery callback.
   void request_rebuild() { rebuild_requested_ = true; }

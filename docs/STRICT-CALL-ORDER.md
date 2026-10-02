@@ -3,41 +3,41 @@
 This change fixes application retry overtaking. It does **not** infer a missing source order from
 UUIDs, timestamps, Kafka offsets, or the order in which concurrent callbacks acquire a lock.
 
-## Contract
+## Module-only contract (no FreeSWITCH changes)
 
-The ordered stream is `(topic, Channel-Call-UUID)`. Its source owns a persistent, contiguous,
-zero-based sequence for **the selected events in that stream**. A UUID must identify a fresh call
-and must not be reused. Retries preserve the original payload, event ID, source sequence and key.
-For a fixed Kafka partition count, a stable nonempty key, one call owner, and acknowledged broker
-writes that survive the broker failure model, first occurrences in Kafka preserve that sequence.
-Different calls may be in flight concurrently, including calls sharing one partition.
+For each `(topic, Channel-Call-UUID)`, successfully accepted events are ordered by the SQLite
+transaction commit that persists both the payload and its next admission ordinal. The pipeline
+lifecycle mutex serializes concurrent admissions, and the outbox transaction is the linearization
+point. Callback entry, event creation, log printing and enqueue return timing are not the ordering
+reference. A failed transaction allocates no ordinal; acknowledged cursors survive process restart.
+Retries preserve payload, event ID, ordinal and Kafka key. The ordinal is also returned to diagnostics
+and emitted as `x-fs-call-sequence`; its meaning in this module is **admission**, not source creation.
 
-`KafkaPipeline::enqueue(..., source_sequence)` commits the event and ordering metadata to SQLite
-before returning success. A future sequence may arrive before its predecessor; it waits for the
-missing sequence, even if no predecessor row exists yet. Source sequence is included in the
-`x-fs-call-sequence` Kafka header; `x-fs-event-id` remains the retry/deduplication identity.
-The original payload is never rewritten to make a validation sequence look ordered.
+The FS adapter always uses this internal ordinal. It neither requires nor interprets a custom
+`Kafka-Call-Sequence` header. That header, if present, remains ordinary payload. The old
+`require-source-sequence` option is accepted for config compatibility but ignored and warned about.
+The standalone core retains its explicit-sequence API for historical tests/other verified producers;
+that optional API is not used by this FS module and is not an FS integration prerequisite.
 
-Compatibility calls omitting the optional sequence allocate a durable **admission** ordinal in the
-same SQLite transaction. They guarantee accepted admission order, not upstream business order.
-A stream cannot change between admission/source modes or change its Kafka key. Repeated source
-sequences, already acknowledged sequences, and conflicting keys are rejected; this submission API
-is not an idempotent upstream RPC. A caller must retain a failed admission and reconcile ambiguous
-admissions; skipping a rejected sequence intentionally blocks the stream.
+This is a restricted guarantee, requiring user acceptance because the original requirement may
+mean earlier FS source order. No claim is made that native FS creation/fire order is restored.
+`Event-Sequence` is global, has legitimate gaps from other calls, filters and never-fired events,
+and resets across source epochs. Timestamps can tie, regress, or describe different event phases.
+`Core-UUID` distinguishes epochs but supplies no contiguous per-call order. Concurrent asynchronous
+FS dispatch may deliver a lower creation ordinal later. Waiting for consecutive global numbers
+can wait forever; a bounded sort window cannot prove completeness or causality.
 
-The FreeSWITCH adapter defaults `require-source-sequence=0` (admission-order compatibility, with a startup warning). In explicit source mode `1`, call events must carry
-`Kafka-Call-Sequence`; missing or malformed sequence is rejected and logged. `CHANNEL_*` events
-without a call identity are also rejected. Native `Event-Sequence` is global, has per-call gaps,
-and is **not** a substitute. Filtering must occur before the upstream per-call sequence is assigned.
-Setting the option to `0` explicitly chooses the weaker compatibility admission-order contract;
-this must not be described as source-order validation.
+The existing exact Channel-Call-UUID grouping/key is preserved. No new A/B-leg association is
+inferred, no distinct IDs are merged by timestamp/related headers, and no Core-UUID key change is
+silently introduced. If upstream already assigns the same ID to multiple legs, this module provides
+one combined **admission** order for that ID, not a cross-leg causal order. Missing IDs remain
+ungrouped, with no per-call guarantee. Separate module instances/databases do not coordinate order.
+For a fixed Kafka partition count/topic identity, stable key, single module owner and acknowledged
+broker writes surviving the failure model, Kafka first occurrences preserve the admission ordinal.
 
-**Rollout prerequisite:** integrate a real source owner that emits this header and persists its
-sequence across its own restart. This repository cannot recover an earlier event that has not yet
-arrived from an unconstrained concurrent FreeSWITCH dispatcher. The cloud tests exercise the core
-and compile the module, but do not load the module or validate that upstream integration.
-Do not enable source mode `1` for an existing unmodified FreeSWITCH source: its
-call events will be rejected. Non-call events without a call UUID remain ungrouped.
+An event lost before durable admission (including upstream ignoring admission rejection) is outside
+this contract. Admission is synchronous SQLite WAL/FULL and may block the FS callback on storage.
+The tests compile the FS module but do not load it or run real calls; this is not FS end-to-end proof.
 
 ## Durable state machine
 
@@ -90,10 +90,15 @@ stream metadata is separately limited to `outbox-max-rows` streams. The payload-
 a cap on SQLite pages, indexes, WAL, keys or total filesystem use. Monitor and reserve disk space.
 
 Completed cursors deliberately remain, so a restart cannot restart an old call at sequence zero.
-They are not silently GC'd: after the stream limit, new calls are explicitly refused. Production
-needs a completed-call retention/retirement procedure based on source-confirmed closure, no remaining
-outbox rows and no possible late/replayed source submissions; this candidate does not implement an
-automatic retirement service. Raising the limit trades storage for a longer retention horizon.
+They are not silently GC'd: after the stream limit, new calls are explicitly refused. There is no safe universal closure signal in the currently known event contract: one leg's
+HANGUP/DESTROY or an idle timeout is insufficient. Under the no-FS-change constraint, automatic
+retirement remains disabled. Reuse/late events on the same ID continue the existing ordinal (and
+remain behind a poison barrier); this does not assert they are the same business call. A future
+operator-approved retirement workflow must first quiesce admission, drain/reconcile every row,
+archive a consistent DB and establish a new explicitly named stream epoch/topic or durable replay
+fence. Deleting a cursor in place resets ordering and is not an acceptable cleanup procedure.
+Business event filters/whole-call closure information may permit a narrower module-only policy,
+but that has not been assumed or implemented. Raising the limit trades storage for a longer retention horizon.
 
 Per-call throughput is bounded by one successful head at a time, broker ACK latency, polling and
 SQLite commits. Other calls can progress; head selection uses least-recently-served durable call turn before
@@ -122,6 +127,7 @@ source plan, admission sequence/time/latency, per-process metrics, DB snapshots 
 raw independent-consumer offsets/payloads/IDs, duplicates and final cursors. To reuse its workspace:
 
 ```bash
+export ORDER_ADMISSION=1 # module admission contract, no supplied source sequence
 export ORDER_WORKSPACE=/workspace/kafka-order-fix-evidence
 export ORDER_DRIVER=/absolute/build/test_ordering_drill
 export ORDER_READER=/absolute/build/order_readback
@@ -142,3 +148,21 @@ public rebuild request while in flight; they do not inject a genuine broker/clie
 SIGKILL tests exercise process death after durable admissions, not power-loss correctness of the
 underlying storage. Neither these tests nor the ordering fix establish the production Alibaba Cloud
 ERR87 incident's root cause.
+
+## Nonempty legacy database procedure
+
+No sequence is inferred from rowid, created_at_ms, Event-Sequence or current retry state. An old
+backlog may already have been partially delivered and reordered; a module upgrade cannot undo it.
+For a nonempty pre-v2 DB, open fails before altering the schema. Keep the original binary and DB
+backup. In an isolated copy, inventory pending/in_flight/dead IDs and reconcile broker offsets with
+independent receipts. Choose explicitly between draining under the old weaker contract (which does
+not repair old order) or quarantining the backlog and starting a separately identified new stream.
+Neither choice may be silently labeled continuous strict order. Take the backup using SQLite's
+consistent backup mechanism or after a clean stopped/checkpointed writer; copying the .db alone while
+WAL is active is not sufficient. Production execution is outside this patch.
+
+A nonempty historical candidate DB in explicit `source` mode also cannot be relabeled `admission`:
+the mode/key guard rejects that conversion. V2 admission-mode DBs upgrade to v3 preserving every
+cursor; future schema versions are refused. Never run an original pre-ordering binary against the
+new DB or delete cursor rows to make an upgrade succeed. The unit migration tests verify the legacy
+nonempty refusal and cursor-preserving ordered upgrade; no production backlog is claimed migrated.

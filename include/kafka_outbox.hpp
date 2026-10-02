@@ -40,7 +40,7 @@ class Outbox {
   bool open(std::string& err);
   void close();
 
-  bool insert_pending(const OutboxRecord& rec, std::string& err);
+  bool insert_pending(const OutboxRecord& rec, std::string& err, int64_t* assigned_sequence = nullptr);
   bool retry_dead(const std::string& event_id, std::string& err);
   std::vector<OutboxRecord> fetch_due(int64_t now_ms, int limit);
   bool mark_in_flight(const std::string& event_id, std::string& err);

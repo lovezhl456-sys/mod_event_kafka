@@ -19,11 +19,9 @@
 		<param name="outbox-ttl-ms" value="120000"/>
 		<param name="message-timeout-ms" value="30000"/>
 		<param name="enable-idempotence" value="1"/>
-		<!-- Compatibility default 0 preserves durable admission order, NOT native FS source order.
-		     Mode 1 requires an upstream contiguous per-call Kafka-Call-Sequence (starts at 0).
-		     Native Event-Sequence is global and MUST NOT be substituted.
-		     Missing source sequence rejects call events. 0 opts into admission-order compatibility only. -->
-		<param name="require-source-sequence" value="0"/>
+		<!-- This module orders successful durable admissions per Channel-Call-UUID.
+             Earlier FS creation/fire order is not guaranteed. No new FS header is required.
+             Legacy require-source-sequence is ignored; Kafka-Call-Sequence is payload only. -->
 		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL；留空 = 自动选择 -->
 		<param name="ssl-ca-location" value=""/>
 	</settings>

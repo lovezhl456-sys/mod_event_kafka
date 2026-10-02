@@ -51,12 +51,20 @@ admissions={};latency=[]
 for line in (run/'admissions.tsv').read_text().splitlines():
  id,call,seq,at,us,ok,error=line.split('\t');assert ok=='1',(line,'admission failed');admissions[id]=(call,int(seq));latency.append(int(us))
 assert set(admissions.values())==plan and len(admissions)==len(plan)
+assigned={}
+if os.environ.get('ORDER_ADMISSION'):
+ for line in (run/'assigned.tsv').read_text().splitlines():
+  id,call,seq=line.split('\t');assigned[id]=(call,int(seq))
+ assert set(assigned)==set(admissions)
+ for call in {v[0] for v in assigned.values()}:
+  assert sorted(v[1] for v in assigned.values() if v[0]==call)==list(range(events))
+else:assigned=admissions
 records=[];seen=set();orders={};partitions={};allorders={};duplicates=[]
 for line in (run/'records.tsv').read_text().splitlines():
- partition,offset,id,header,key,payload=line.split('\t',5);payload=json.loads(payload);identity=(payload['call_id'],int(payload['sequence']));assert identity==admissions[id];assert key==identity[0] and int(header)==identity[1]
- record=dict(partition=int(partition),offset=int(offset),event_id=id,call=identity[0],sequence=identity[1]);records.append(record);partitions.setdefault(identity[0],set()).add(int(partition));allorders.setdefault(identity[0],[]).append(identity[1])
+ partition,offset,id,header,key,payload=line.split('\t',5);payload=json.loads(payload);identity=(payload['call_id'],int(payload['sequence']));assert identity==admissions[id];assert key==identity[0] and int(header)==assigned[id][1]
+ record=dict(partition=int(partition),offset=int(offset),event_id=id,call=identity[0],sequence=assigned[id][1]);records.append(record);partitions.setdefault(identity[0],set()).add(int(partition));allorders.setdefault(identity[0],[]).append(assigned[id][1])
  if id in seen:duplicates.append(record);continue
- seen.add(id);orders.setdefault(identity[0],[]).append(identity[1])
+ seen.add(id);orders.setdefault(identity[0],[]).append(assigned[id][1])
 assert all(len(v)==1 for v in partitions.values())
 assert all(v==sorted(v) and len(v)==len(set(v)) for v in orders.values()),orders
 final=[]
@@ -71,9 +79,15 @@ elif scenario=='ttl':
  for call,seqs in orders.items():assert seqs==list(range(len(seqs)))
 else:assert len(seen)==len(plan) and not final
 assert seen|{x['event_id'] for x in final}==set(admissions)
-assert not seen&{x['event_id'] for x in final}
+overlap=seen&{x['event_id'] for x in final}
+if scenario=='ttl':
+ # An appended head can lose its ACK and expire locally. It remains a barrier.
+ for call,seqs in orders.items():
+  barriers=[x['sequence'] for x in final if x['call']==call]
+  if barriers:assert max(seqs)<=min(barriers)
+else:assert not overlap
 sender=json.loads((run/('sender-resume.json' if restarted else 'sender.json')).read_text())
 if scenario=='rebuild':assert sender['rebuilds']>=1
 if scenario in ('cut','rebuild','restart','ttl','blackhole'):assert fault_start and fault_end
-summary=dict(name=name,scenario=scenario,command=command,calls=calls,events_per_call=events,source_events=len(plan),records=len(records),unique=len(seen),duplicates=len(duplicates),dead=sum(x['state']=='dead' for x in final),blocked_pending=sum(x['state']=='pending' for x in final),strict_first_order=True,raw_nondecreasing=all(v==sorted(v) for v in allorders.values()),source_sequence_headers_match=True,partitions={k:sorted(v) for k,v in partitions.items()},elapsed_s=time.monotonic()-started,peak_rss_kib=peak_rss,peak_outbox_disk_bytes=peak_disk,admission_p50_us=statistics.median(latency),admission_p95_us=sorted(latency)[int(len(latency)*.95)],admission_max_us=max(latency),processes=processes,sender=sender,binary_sha256=hashlib.sha256(driver.read_bytes()).hexdigest(),pass_expected_contract=True)
+summary=dict(name=name,scenario=scenario,command=command,calls=calls,events_per_call=events,source_events=len(plan),records=len(records),unique=len(seen),duplicates=len(duplicates),broker_seen_but_locally_unacked=sorted(overlap),dead=sum(x['state']=='dead' for x in final),blocked_pending=sum(x['state']=='pending' for x in final),order_contract="module_admission" if os.environ.get("ORDER_ADMISSION") else "explicit_source",strict_first_order=True,raw_nondecreasing=all(v==sorted(v) for v in allorders.values()),sequence_headers_match_durable_assignment=True,partitions={k:sorted(v) for k,v in partitions.items()},elapsed_s=time.monotonic()-started,peak_rss_kib=peak_rss,peak_outbox_disk_bytes=peak_disk,admission_p50_us=statistics.median(latency),admission_p95_us=sorted(latency)[int(len(latency)*.95)],admission_max_us=max(latency),processes=processes,sender=sender,binary_sha256=hashlib.sha256(driver.read_bytes()).hexdigest(),pass_expected_contract=True)
 (run/'result.json').write_text(json.dumps(summary,indent=2));(run/'duplicates.json').write_text(json.dumps(duplicates,indent=2));print(json.dumps(summary),flush=True)
