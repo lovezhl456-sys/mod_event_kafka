@@ -35,6 +35,8 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <charconv>
+#include <cstring>
 #include <memory>
 #include <switch.h>
 #include "mod_event_kafka.hpp"
@@ -76,6 +78,8 @@ namespace mod_event_kafka {
                             30000, NULL, "message-timeout-ms", "Topic message.timeout.ms (must be applied)"),
         SWITCH_CONFIG_ITEM("enable-idempotence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.enable_idempotence,
                             1, NULL, "enable-idempotence", "librdkafka enable.idempotence"),
+        SWITCH_CONFIG_ITEM("require-source-sequence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.require_source_sequence,
+                            1, NULL, "require-source-sequence", "Require contiguous Kafka-Call-Sequence for call events"),
         SWITCH_CONFIG_ITEM("security-protocol", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.security_protocol,
                             "", NULL, "security-protocol", "PLAINTEXT/SASL_PLAINTEXT/SASL_SSL/SSL"),
         SWITCH_CONFIG_ITEM("ssl-ca-location", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.ssl_ca_location,
@@ -124,6 +128,7 @@ namespace mod_event_kafka {
             cfg.outbox_max_rows = globals.outbox_max_rows > 0 ? globals.outbox_max_rows : 100000;
             cfg.message_timeout_ms = globals.message_timeout_ms > 0 ? globals.message_timeout_ms : 30000;
             cfg.enable_idempotence = globals.enable_idempotence != 0;
+            cfg.require_source_sequence = globals.require_source_sequence != 0;
             // 0 表示关闭过期；负值视为未配置，使用默认值。
             cfg.outbox_ttl_ms = globals.outbox_ttl_ms < 0 ? 120000 : globals.outbox_ttl_ms;
 
@@ -159,13 +164,27 @@ namespace mod_event_kafka {
             std::string call_uuid = key;
             std::string event_id;
             std::string err;
-            const bool ok = pipeline_->enqueue(payload, key, call_uuid, event_id, err);
+            int64_t source_sequence = -1;
+            const char* sequence_header = switch_event_get_header(event, "Kafka-Call-Sequence");
+            bool valid_sequence = true;
+            if (sequence_header) {
+                const char* end = sequence_header + std::strlen(sequence_header);
+                const auto parsed = std::from_chars(sequence_header, end, source_sequence);
+                valid_sequence = parsed.ec == std::errc{} && parsed.ptr == end && source_sequence >= 0;
+            }
+            const char* event_name = switch_event_get_header(event, "Event-Name");
+            if (globals.require_source_sequence && key.empty() && event_name &&
+                std::strncmp(event_name, "CHANNEL_", 8) == 0) {
+                valid_sequence = false;
+            }
+            if (!valid_sequence) err = "invalid call identity/Kafka-Call-Sequence";
+            const bool ok = valid_sequence && pipeline_->enqueue(payload, key, call_uuid, event_id, err, source_sequence);
             std::free(event_json);
             if (!ok) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-                                  "event enqueue rejected (%s); metrics rejected_mem=%llu\n",
+                                  "event admission rejected (%s); metrics rejected_disk_or_order=%llu\n",
                                   err.c_str(),
-                                  (unsigned long long)pipeline_->metrics().rejected_mem_full.load());
+                                  (unsigned long long)pipeline_->metrics().rejected_disk_full.load());
             } else {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
                                   "enqueued event_id=%s key=%s\n", event_id.c_str(), key.c_str());

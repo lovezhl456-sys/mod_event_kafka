@@ -11,13 +11,18 @@
 		<!-- 新增的可选配置：可靠性 / 安全。省略的键使用模块默认值。
 		     实验室拨测示例（toxiproxy bootstrap、CHANNEL_* 过滤）：lab/event_kafka.fs.conf.xml -->
 		<param name="outbox-path" value="/var/lib/freeswitch/event_kafka_outbox.db"/>
+		<!-- Deprecated: admissions now commit synchronously to SQLite; this memory limit is not used. -->
 		<param name="mem-queue-max" value="10000"/>
 		<param name="outbox-max-rows" value="100000"/>
-		<!-- 存在时间超过该值（毫秒）的 pending 行会被标为 dead（expired_ttl），不再投递。
+		<!-- 存在时间超过该值（毫秒）的 pending 行会被标为 dead（expired_ttl），不再投递，并阻塞该通话的后续事件，直到明确处理原事件。
 		     0 表示关闭。默认 120000（2 分钟）。时长在 TTL 以内的中断，Kafka 恢复后仍会排空，无需 reload。 -->
 		<param name="outbox-ttl-ms" value="120000"/>
 		<param name="message-timeout-ms" value="30000"/>
 		<param name="enable-idempotence" value="1"/>
+		<!-- Requires an upstream contiguous per-call Kafka-Call-Sequence (starts at 0).
+		     Native Event-Sequence is global and MUST NOT be substituted.
+		     Missing source sequence rejects call events. 0 opts into admission-order compatibility only. -->
+		<param name="require-source-sequence" value="1"/>
 		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL；留空 = 自动选择 -->
 		<param name="ssl-ca-location" value=""/>
 	</settings>

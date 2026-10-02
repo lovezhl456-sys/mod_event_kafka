@@ -1,8 +1,5 @@
 #pragma once
 
-#include "bounded_queue.hpp"
-#include "kafka_outbox.hpp"
-
 #include <librdkafka/rdkafka.h>
 
 #include <atomic>
@@ -11,6 +8,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "bounded_queue.hpp"
+#include "kafka_outbox.hpp"
 
 namespace event_kafka {
 
@@ -29,6 +29,7 @@ struct PipelineConfig {
   int64_t outbox_max_bytes{512LL * 1024 * 1024};
   int message_timeout_ms{30000};
   bool enable_idempotence{true};
+  bool require_source_sequence{false};  // compatibility API guarantees admission order only
   int worker_idle_ms{50};
   int poll_ms{100};
   int max_attempts_before_dead{50};
@@ -40,6 +41,7 @@ struct PipelineMetrics {
   std::atomic<uint64_t> enqueued{0};
   std::atomic<uint64_t> rejected_mem_full{0};
   std::atomic<uint64_t> rejected_disk_full{0};
+  std::atomic<uint64_t> state_errors{0};
   std::atomic<uint64_t> produce_ok{0};
   std::atomic<uint64_t> produce_fail{0};
   std::atomic<uint64_t> delivery_fail{0};
@@ -57,9 +59,11 @@ class KafkaPipeline {
   bool start(std::string& err);
   void stop();
 
-  bool enqueue(const std::string& payload, const std::string& msg_key,
-               const std::string& call_uuid, std::string& event_id_out,
-               std::string& err);
+  bool enqueue(const std::string& payload, const std::string& msg_key, const std::string& call_uuid,
+               std::string& event_id_out, std::string& err, int64_t source_sequence = -1);
+
+  // Executed by the sole producer owner, never from inside a delivery callback.
+  void request_rebuild() { rebuild_requested_ = true; }
 
   PipelineMetrics& metrics() { return metrics_; }
   const PipelineMetrics& metrics() const { return metrics_; }
@@ -70,30 +74,27 @@ class KafkaPipeline {
     std::string event_id;
   };
 
-  static void on_delivery(rd_kafka_t* rk, const rd_kafka_message_t* msg,
-                          void* opaque);
+  static void on_delivery(rd_kafka_t* rk, const rd_kafka_message_t* msg, void* opaque);
   bool create_producer_unlocked(std::string& err);
   void destroy_producer_unlocked();
   void rebuild_producer();
   void worker_loop();
-  void poll_loop();
   bool produce_record(const OutboxRecord& rec, std::string& err);
   static bool is_permanent_error(rd_kafka_resp_err_t err);
   static int64_t backoff_ms(int attempts);
 
   PipelineConfig cfg_;
   PipelineMetrics metrics_;
-  std::unique_ptr<BoundedQueue> queue_;
   std::unique_ptr<Outbox> outbox_;
 
-  mutable std::mutex rk_mu_;
   rd_kafka_t* rk_{nullptr};
   rd_kafka_topic_t* rkt_{nullptr};
 
   std::atomic<bool> running_{false};
   std::atomic<bool> accept_{false};
   std::thread worker_;
-  std::thread poller_;
+  std::atomic<bool> rebuild_requested_{false};
+  std::mutex lifecycle_mu_;
 };
 
-}  // 命名空间 event_kafka
+}  // namespace event_kafka
