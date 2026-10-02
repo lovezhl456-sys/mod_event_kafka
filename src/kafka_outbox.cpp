@@ -150,7 +150,7 @@ bool Outbox::open(std::string& err) {
     {
       Statement v(impl_->db, "PRAGMA user_version");
       v.row();
-      if (v.integer(0) > 2) throw std::runtime_error("unsupported outbox schema version");
+      if (v.integer(0) > 3) throw std::runtime_error("unsupported outbox schema version");
     }
     sql(impl_->db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
     Transaction tx(impl_->db);
@@ -168,7 +168,11 @@ bool Outbox::open(std::string& err) {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_seq ON outbox(topic,call_uuid,call_seq);"
         "CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(state,next_attempt_at_ms);"
         "CREATE INDEX IF NOT EXISTS idx_outbox_ttl ON outbox(state,created_at_ms); PRAGMA "
-        "user_version=2;");
+        "user_version=3;"
+        "CREATE TABLE IF NOT EXISTS order_scheduler(id INTEGER PRIMARY KEY CHECK(id=1),turn "
+        "INTEGER NOT NULL);"
+        "INSERT OR IGNORE INTO order_scheduler SELECT 1,COALESCE(MAX(last_served_ms),0) FROM "
+        "call_streams;");
     // New-schema rows without their durable cursor cannot be safely scheduled.
     {
       Statement q(impl_->db,
@@ -318,11 +322,18 @@ bool Outbox::mark_in_flight(const std::string& id, std::string& err) {
     q.bind(2, id);
     q.done();
     if (sqlite3_changes(impl_->db) != 1) throw std::runtime_error("not a pending call head");
+    // Historical column name retained on migration; its value is now a durable service turn,
+    // not wall time. Reboots and wall-clock rollback cannot repeatedly favor the same calls.
+    Statement tick(
+        impl_->db,
+        "UPDATE order_scheduler SET turn=turn+1 WHERE id=1 AND turn<9223372036854775807");
+    tick.done();
+    if (sqlite3_changes(impl_->db) != 1) throw std::runtime_error("scheduler turn exhausted");
     Statement served(impl_->db,
-                     "UPDATE call_streams SET last_served_ms=? WHERE (topic,call_uuid)=(SELECT "
+                     "UPDATE call_streams SET last_served_ms=(SELECT turn FROM order_scheduler "
+                     "WHERE id=1) WHERE (topic,call_uuid)=(SELECT "
                      "topic,call_uuid FROM outbox WHERE event_id=?)");
-    served.bind(1, wall_now_ms());
-    served.bind(2, id);
+    served.bind(1, id);
     served.done();
     tx.commit();
     return true;

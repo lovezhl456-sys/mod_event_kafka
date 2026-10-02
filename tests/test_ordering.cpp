@@ -4,6 +4,7 @@
 #include <atomic>
 #include <filesystem>
 #include <iostream>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -231,6 +232,82 @@ void transactional_failures() {
   REQUIRE(got.call_seq == 1);
 }
 
+void scheduler_upgrade_and_fairness() {
+  std::string path = base + "fairness.db", err;
+  {
+    Outbox b(path, 1000, 100000);
+    REQUIRE(b.open(err));
+    for (int c = 0; c < 96; c++)
+      for (int n = 0; n < 2; n++)
+        REQUIRE(b.insert_pending(row("fair-" + std::to_string(c), n), err));
+  }
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db,
+                       "DROP TABLE order_scheduler; PRAGMA user_version=2; UPDATE call_streams SET "
+                       "last_served_ms=9000000000000000 WHERE call_uuid='fair-95'",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+  Outbox b(path, 1000, 100000);
+  REQUIRE(b.open(err));
+  std::set<std::string> served;
+  for (int round = 0; round < 3; round++) {
+    auto due = b.fetch_due(wall_now_ms() + 1000, 32);
+    REQUIRE(due.size() == 32);
+    for (const auto& r : due) {
+      REQUIRE(r.call_seq == 0);
+      REQUIRE(served.insert(r.call_uuid).second);
+      REQUIRE(b.mark_in_flight(r.event_id, err));
+      REQUIRE(b.mark_acked(r.event_id, err));
+    }
+  }
+  REQUIRE(served.size() == 96);
+}
+void concurrent_stop_admission() {
+  PipelineConfig cfg;
+  cfg.brokers = "127.0.0.1:1";
+  cfg.topic = "stop";
+  cfg.outbox_path = base + "stop-race.db";
+  cfg.outbox_ttl_ms = 0;
+  cfg.message_timeout_ms = 100;
+  cfg.poll_ms = 5;
+  cfg.worker_idle_ms = 5;
+  cfg.require_source_sequence = true;
+  KafkaPipeline p(cfg);
+  std::string err;
+  REQUIRE(p.start(err));
+  std::atomic<int> accepted{0};
+  std::vector<std::thread> senders;
+  std::vector<std::vector<std::string>> ids(4);
+  for (int c = 0; c < 4; c++)
+    senders.emplace_back([&, c] {
+      for (int n = 0; n < 20; n++) {
+        std::string id, e;
+        if (!p.enqueue("payload", "stop-" + std::to_string(c), "stop-" + std::to_string(c), id, e,
+                       n))
+          break;
+        ids[c].push_back(id);
+        ++accepted;
+      }
+    });
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (accepted < 4 && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+  auto began = std::chrono::steady_clock::now();
+  p.stop();
+  for (auto& t : senders) t.join();
+  REQUIRE(std::chrono::steady_clock::now() - began < std::chrono::seconds(10));
+  REQUIRE(accepted >= 4);
+  Outbox b(cfg.outbox_path, 1000, 100000);
+  REQUIRE(b.open(err));
+  auto st = b.stats();
+  REQUIRE(st.pending + st.in_flight == accepted);
+  for (const auto& group : ids)
+    for (const auto& id : group) {
+      OutboxRecord r;
+      REQUIRE(b.get(id, r));
+    }
+}
+
 int main() {
   try {
     base = "/tmp/event-kafka-order-" + std::to_string(getpid()) + "/";
@@ -242,6 +319,8 @@ int main() {
     migration();
     durability_admission();
     transactional_failures();
+    scheduler_upgrade_and_fairness();
+    concurrent_stop_admission();
     fs::remove_all(base);
     std::cout << "ordering: "
                  "heads/backoff/inflight/dead/gaps/concurrency/restart/ownership/TTL/migration/"

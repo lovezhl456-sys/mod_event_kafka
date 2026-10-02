@@ -79,7 +79,7 @@ namespace mod_event_kafka {
         SWITCH_CONFIG_ITEM("enable-idempotence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.enable_idempotence,
                             1, NULL, "enable-idempotence", "librdkafka enable.idempotence"),
         SWITCH_CONFIG_ITEM("require-source-sequence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.require_source_sequence,
-                            1, NULL, "require-source-sequence", "Require contiguous Kafka-Call-Sequence for call events"),
+                            0, NULL, "require-source-sequence", "Require contiguous Kafka-Call-Sequence for call events"),
         SWITCH_CONFIG_ITEM("security-protocol", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.security_protocol,
                             "", NULL, "security-protocol", "PLAINTEXT/SASL_PLAINTEXT/SASL_SSL/SSL"),
         SWITCH_CONFIG_ITEM("ssl-ca-location", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.ssl_ca_location,
@@ -136,8 +136,11 @@ namespace mod_event_kafka {
             std::string err;
             if (!pipeline_->start(err)) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "KafkaPipeline start failed: %s\n", err.c_str());
-                _initialized = false;
-                return;
+                throw std::runtime_error("KafkaPipeline start failed: " + err);
+            }
+            if (!cfg.require_source_sequence) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+                    "Kafka ordering mode: durable ADMISSION order only; concurrent FS source order is NOT guaranteed. Configure a verified source adapter before enabling source-sequence mode.\n");
             }
             _initialized = true;
         }

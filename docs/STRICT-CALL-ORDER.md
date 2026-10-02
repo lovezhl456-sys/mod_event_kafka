@@ -25,7 +25,7 @@ sequences, already acknowledged sequences, and conflicting keys are rejected; th
 is not an idempotent upstream RPC. A caller must retain a failed admission and reconcile ambiguous
 admissions; skipping a rejected sequence intentionally blocks the stream.
 
-The FreeSWITCH adapter defaults `require-source-sequence=1`. Call events must carry
+The FreeSWITCH adapter defaults `require-source-sequence=0` (admission-order compatibility, with a startup warning). In explicit source mode `1`, call events must carry
 `Kafka-Call-Sequence`; missing or malformed sequence is rejected and logged. `CHANNEL_*` events
 without a call identity are also rejected. Native `Event-Sequence` is global, has per-call gaps,
 and is **not** a substitute. Filtering must occur before the upstream per-call sequence is assigned.
@@ -36,7 +36,7 @@ this must not be described as source-order validation.
 sequence across its own restart. This repository cannot recover an earlier event that has not yet
 arrived from an unconstrained concurrent FreeSWITCH dispatcher. The cloud tests exercise the core
 and compile the module, but do not load the module or validate that upstream integration.
-Do not deploy the default strict configuration to an existing unmodified FreeSWITCH source: its
+Do not enable source mode `1` for an existing unmodified FreeSWITCH source: its
 call events will be rejected. Non-call events without a call UUID remain ungrouped.
 
 ## Durable state machine
@@ -72,14 +72,14 @@ order, raw nondecreasing order, per-call partition, payload sequence and header 
 
 ## Upgrade, capacity and rollback
 
-Schema version 2 adds `outbox.call_seq`, a unique `(topic,call_uuid,call_seq)` index, and durable
+Schema version 3 retains the v2 ordering state and adds a durable scheduler turn. Version 2 added `outbox.call_seq`, a unique `(topic,call_uuid,call_seq)` index, and durable
 `call_streams` cursors/key/mode. Fresh and **empty** legacy outboxes upgrade transactionally.
-A nonempty legacy outbox fails closed before schema migration; its source order cannot be proved.
+A v2 outbox upgrades transactionally with existing cursors preserved; the scheduler starts above its retained service timestamps. A nonempty pre-v2 legacy outbox fails closed before schema migration; its source order cannot be proved.
 Back it up, preserve its WAL consistently, reconcile it against original source/consumer evidence,
 and explicitly drain/quarantine it before upgrade. Never fabricate source sequence during migration.
 Unknown future schema versions and missing ordered cursors also fail closed.
 
-Do not point an old binary at a v2 outbox: it does not know the cursor rules. Rollback needs a stopped
+Do not point an old binary at a v3 outbox: it does not know the cursor rules. Rollback needs a stopped
 publisher and a separately reconciled backup, not an automatic downgrade. No production migration
 has been executed by this work.
 
@@ -96,7 +96,7 @@ outbox rows and no possible late/replayed source submissions; this candidate doe
 automatic retirement service. Raising the limit trades storage for a longer retention horizon.
 
 Per-call throughput is bounded by one successful head at a time, broker ACK latency, polling and
-SQLite commits. Other calls can progress; head selection uses least-recently-served call time before
+SQLite commits. Other calls can progress; head selection uses least-recently-served durable call turn before
 age to avoid continuously selecting only the oldest busy calls. There is no promise of a precise
 latency/fairness bound under overload. Retained poison calls can eventually consume the shared disk
 quota and cause visible global admission rejection. SQLite FULL fsync and large backlogs require
