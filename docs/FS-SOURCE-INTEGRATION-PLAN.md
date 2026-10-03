@@ -87,9 +87,10 @@ identity established there. That is a larger source contract than ordering publi
 * **Poison message:** keep original ID/payload/sequence and all successors. Operator retry after the
   cause is corrected is supported. An irreparable record quarantines the call. A business-approved
   gap/tombstone/compensation protocol would be a separate explicit state transition, not DELETE.
-* **TTL:** TTL is an operational dead/blocked transition, not business success, cursor advancement,
-  call closure or permission to free the stream. Retry does not falsify original creation time;
-  the operator must explicitly change the expiry policy before retrying an expired event.
+* **TTL:** TTL is an operational dead/blocked transition of the current deliverable head (or an
+  ungrouped row), not business success, cursor advancement, call closure or permission to free the
+  stream. Successors waiting behind that head are not expired. Retry does not falsify original
+  creation time or deliverable age; set TTL to 0 or raise it before retrying an expired head.
 
 ## Independent review and next test gates
 

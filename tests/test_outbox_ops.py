@@ -129,5 +129,24 @@ class Operations(unittest.TestCase):
             for n in range(5):db.execute('INSERT INTO outbox VALUES(?,?,?,?,?,?,?,?,?,?,?)',(str(n),'t','k','p','pending',0,1,'',1,1,str(n)))
         self.call('migrate',output='overflow.db',ok=False)
 
+    def test_cpp_core_opens_tool_databases(self):
+        binary = os.environ.get('OPS_INTEROP_BIN')
+        if not binary:
+            self.skipTest('OPS_INTEROP_BIN is not set')
+        self.populate()
+        self.call('migrate', output='migrated.db')
+        migrated = subprocess.run([binary, 'migrated', str(self.root / 'migrated.db')],
+                                  capture_output=True, text=True)
+        self.assertEqual(migrated.returncode, 0, migrated.stdout + migrated.stderr)
+        seed = self.root / 'seed.db'
+        seeded = subprocess.run([binary, 'seed', str(seed)], capture_output=True, text=True)
+        self.assertEqual(seeded.returncode, 0, seeded.stdout + seeded.stderr)
+        flags = ['--topic', 't', '--call-id', 'closed', '--reason', 'operator verified closure',
+                 '--reject-future-call-id']
+        self.call('retire', source=seed, output='retired.db', flags=flags)
+        retired = subprocess.run([binary, 'retired', str(self.root / 'retired.db')],
+                                 capture_output=True, text=True)
+        self.assertEqual(retired.returncode, 0, retired.stdout + retired.stderr)
+
 
 if __name__ == '__main__':unittest.main()

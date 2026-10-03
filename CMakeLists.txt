@@ -34,7 +34,9 @@ add_executable(test_pipeline_drill tests/test_pipeline_drill.cpp)
 target_link_libraries(test_pipeline_drill PRIVATE event_kafka_core)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
-add_test(NAME drill_tools COMMAND ${Python3_EXECUTABLE} -m unittest discover
+add_test(NAME drill_tools COMMAND ${CMAKE_COMMAND} -E env
+  OPS_INTEROP_BIN=$<TARGET_FILE:test_ops_interop>
+  ${Python3_EXECUTABLE} -m unittest discover
   -s ${CMAKE_SOURCE_DIR}/tests -p test_*.py -v)
 
 add_executable(record_probe tests/record_probe.cpp)
@@ -55,3 +57,4 @@ target_link_libraries(order_readback PRIVATE ${RDKAFKA_LIBRARIES})
 
 add_executable(test_ops_interop tests/test_ops_interop.cpp)
 target_link_libraries(test_ops_interop PRIVATE event_kafka_core)
+add_test(NAME ops_interop COMMAND test_ops_interop)

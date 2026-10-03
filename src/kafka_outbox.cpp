@@ -130,15 +130,17 @@ bool Outbox::open(std::string& err) {
       throw std::runtime_error("outbox open failed");
     sqlite3_busy_timeout(impl_->db, 1000);
     // Refuse ambiguous legacy backlog. Never invent source sequence during upgrade.
-    bool has_table = false, has_seq = false;
+    bool has_table = false, has_seq = false, has_eligible = false;
     {
       Statement q(impl_->db, "SELECT name FROM sqlite_master WHERE type='table' AND name='outbox'");
       has_table = q.row();
     }
     if (has_table) {
       Statement q(impl_->db, "PRAGMA table_info(outbox)");
-      while (q.row())
+      while (q.row()) {
         if (q.text(1) == "call_seq") has_seq = true;
+        if (q.text(1) == "eligible_at_ms") has_eligible = true;
+      }
       if (!has_seq) {
         Statement n(impl_->db, "SELECT count(*) FROM outbox");
         n.row();
@@ -150,7 +152,7 @@ bool Outbox::open(std::string& err) {
     {
       Statement v(impl_->db, "PRAGMA user_version");
       v.row();
-      if (v.integer(0) > 4) throw std::runtime_error("unsupported outbox schema version");
+      if (v.integer(0) > 5) throw std::runtime_error("unsupported outbox schema version");
     }
     sql(impl_->db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
     Transaction tx(impl_->db);
@@ -158,8 +160,10 @@ bool Outbox::open(std::string& err) {
         "CREATE TABLE IF NOT EXISTS outbox(event_id TEXT PRIMARY KEY,topic TEXT NOT NULL,msg_key "
         "TEXT,payload BLOB NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT "
         "0,next_attempt_at_ms INTEGER NOT NULL,last_error TEXT,created_at_ms INTEGER NOT "
-        "NULL,updated_at_ms INTEGER NOT NULL,call_uuid TEXT,call_seq INTEGER);");
+        "NULL,updated_at_ms INTEGER NOT NULL,call_uuid TEXT,call_seq INTEGER,eligible_at_ms INTEGER);");
     if (has_table && !has_seq) sql(impl_->db, "ALTER TABLE outbox ADD COLUMN call_seq INTEGER");
+    if (has_table && !has_eligible)
+      sql(impl_->db, "ALTER TABLE outbox ADD COLUMN eligible_at_ms INTEGER");
     sql(impl_->db,
         "CREATE TABLE IF NOT EXISTS call_streams(topic TEXT NOT NULL,call_uuid TEXT NOT "
         "NULL,msg_key TEXT NOT NULL,mode TEXT NOT NULL,next_seq INTEGER NOT NULL DEFAULT "
@@ -167,8 +171,7 @@ bool Outbox::open(std::string& err) {
         "KEY(topic,call_uuid));"
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_seq ON outbox(topic,call_uuid,call_seq);"
         "CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(state,next_attempt_at_ms);"
-        "CREATE INDEX IF NOT EXISTS idx_outbox_ttl ON outbox(state,created_at_ms); PRAGMA "
-        "user_version=4;"
+        "CREATE INDEX IF NOT EXISTS idx_outbox_ttl ON outbox(state,created_at_ms);"
         "CREATE TABLE IF NOT EXISTS retired_calls(topic TEXT NOT NULL,call_uuid TEXT NOT NULL,"
         "msg_key TEXT NOT NULL,next_seq INTEGER NOT NULL,retired_at_ms INTEGER NOT NULL,"
         "reason TEXT NOT NULL,PRIMARY KEY(topic,call_uuid));"
@@ -191,6 +194,12 @@ bool Outbox::open(std::string& err) {
       q.row();
       if (q.integer(0)) throw std::runtime_error("retired call still has active cursor");
     }
+    // Stamp deliverable age only for rows that are already the head or ungrouped.
+    // Waiting successors stay NULL until the cursor reaches them. Sequences are untouched.
+    sql(impl_->db,
+        "UPDATE outbox SET eligible_at_ms=created_at_ms WHERE eligible_at_ms IS NULL AND ("
+        "COALESCE(call_uuid,'')='' OR call_seq=(SELECT next_seq FROM call_streams s WHERE "
+        "s.topic=outbox.topic AND s.call_uuid=outbox.call_uuid)); PRAGMA user_version=5;");
     tx.commit();
     return true;
   } catch (const std::exception& e) {
@@ -240,6 +249,7 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* 
         throw std::runtime_error("outbox capacity exceeded");
     }
     int64_t seq = rec.call_seq;
+    bool deliverable_now = rec.call_uuid.empty();
     if (!rec.call_uuid.empty()) {
       if (rec.msg_key.empty()) throw std::runtime_error("ordered call requires nonempty key");
       const std::string mode = seq < 0 ? "admission" : "source";
@@ -252,10 +262,12 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* 
         if (q.row()) {
           if (q.text(0) != rec.msg_key || q.text(1) != mode)
             throw std::runtime_error("call key/order mode changed");
+          const int64_t cursor = q.integer(2);
           if (seq < 0)
             seq = q.integer(3);
-          else if (seq < q.integer(2))
+          else if (seq < cursor)
             throw std::runtime_error("source sequence already acknowledged");
+          deliverable_now = seq == cursor;
         } else {
           Statement count(impl_->db, "SELECT count(*) FROM call_streams");
           count.row();
@@ -270,6 +282,7 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* 
           create.bind(4, mode);
           create.done();
           if (seq < 0) seq = 0;
+          deliverable_now = seq == 0;  // a new stream's cursor starts at 0
         }
       }
       if (seq < 0 || seq == std::numeric_limits<int64_t>::max())
@@ -287,7 +300,8 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* 
         impl_->db,
         "INSERT INTO "
         "outbox(event_id,topic,msg_key,payload,state,attempts,next_attempt_at_ms,last_error,"
-        "created_at_ms,updated_at_ms,call_uuid,call_seq) VALUES(?,?,?,?,'pending',0,?,'',?,?,?,?)");
+        "created_at_ms,updated_at_ms,call_uuid,call_seq,eligible_at_ms) "
+        "VALUES(?,?,?,?,'pending',0,?,'',?,?,?,?,?)");
     int64_t now = rec.created_at_ms ? rec.created_at_ms : wall_now_ms();
     q.bind(1, rec.event_id);
     q.bind(2, rec.topic);
@@ -303,6 +317,10 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* 
       sqlite3_bind_null(q.s, 9);
     else
       q.bind(9, seq);
+    if (deliverable_now)
+      q.bind(10, now);
+    else
+      sqlite3_bind_null(q.s, 10);
     q.done();
     tx.commit();
     if (assigned_sequence) *assigned_sequence = rec.call_uuid.empty() ? -1 : seq;
@@ -370,15 +388,29 @@ bool Outbox::mark_acked(const std::string& id, std::string& err) {
         "SELECT topic,call_uuid,call_seq FROM outbox WHERE event_id=? AND state='in_flight'");
     head.bind(1, id);
     if (!head.row()) throw std::runtime_error("ACK for non-in-flight event");
-    if (!head.text(1).empty()) {
+    const std::string topic = head.text(0);
+    const std::string call = head.text(1);
+    const int64_t seq = head.integer(2);
+    if (!call.empty()) {
       Statement cursor(impl_->db,
                        "UPDATE call_streams SET next_seq=next_seq+1 WHERE topic=? AND call_uuid=? "
                        "AND next_seq=?");
-      cursor.bind(1, head.text(0));
-      cursor.bind(2, head.text(1));
-      cursor.bind(3, head.integer(2));
+      cursor.bind(1, topic);
+      cursor.bind(2, call);
+      cursor.bind(3, seq);
       cursor.done();
       if (sqlite3_changes(impl_->db) != 1) throw std::runtime_error("ACK is not the call head");
+      // The successor's deliverable window starts now, not at its admission time.
+      Statement promote(
+          impl_->db,
+          "UPDATE outbox SET eligible_at_ms=? WHERE topic=? AND call_uuid=? AND call_seq=? AND "
+          "eligible_at_ms IS NULL");
+      const int64_t became_head = wall_now_ms();
+      promote.bind(1, became_head);
+      promote.bind(2, topic);
+      promote.bind(3, call);
+      promote.bind(4, seq + 1);
+      promote.done();
     }
     Statement del(impl_->db, "DELETE FROM outbox WHERE event_id=?");
     del.bind(1, id);
@@ -466,9 +498,12 @@ int Outbox::expire_ttl(int64_t now, int64_t ttl, std::string& err) {
   if (ttl <= 0) return 0;
   std::lock_guard<std::mutex> lock(impl_->mu);
   try {
-    Statement q(impl_->db,
-                "UPDATE outbox SET state='dead',last_error='expired_ttl',updated_at_ms=? WHERE "
-                "state='pending' AND (? - created_at_ms)>?");
+    Statement q(
+        impl_->db,
+        "UPDATE outbox SET state='dead',last_error='expired_ttl',updated_at_ms=? WHERE "
+        "state='pending' AND eligible_at_ms IS NOT NULL AND (? - eligible_at_ms)>? AND ("
+        "COALESCE(call_uuid,'')='' OR call_seq=(SELECT next_seq FROM call_streams s WHERE "
+        "s.topic=outbox.topic AND s.call_uuid=outbox.call_uuid))");
     q.bind(1, now);
     q.bind(2, now);
     q.bind(3, ttl);

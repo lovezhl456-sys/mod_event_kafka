@@ -32,10 +32,25 @@ struct PipelineConfig {
   bool require_source_sequence{false};  // compatibility API guarantees admission order only
   int worker_idle_ms{50};
   int poll_ms{100};
+  // One limit for synchronous produce failures and delivery reports.
+  // A permanent broker error, or a durable attempt count that has reached this
+  // value, marks that in-flight row dead. Every other failure retries with the
+  // same attempt-based backoff. 0 or less dead-letters the current try.
   int max_attempts_before_dead{50};
-  // 存在时间超过该值（毫秒）的 pending 行会被标为 dead，不再投递。0 表示关闭。
+  // Age limit for a pending row that is already deliverable (ungrouped, or the
+  // call head). Time spent waiting behind an earlier event does not count.
+  // 0 disables this age expiry and does not disable max_attempts_before_dead.
+  // Use 0 for an outage longer than the head's deliverable window.
   int64_t outbox_ttl_ms{120000};
 };
+
+enum class SendFailureResult { Retry, Dead, Failed };
+
+// Shared by the synchronous produce-failure path and the delivery-report callback.
+// The row must already be in flight. The durable attempt count on that row is used.
+SendFailureResult settle_send_failure(Outbox& outbox, int max_attempts_before_dead,
+                                     const std::string& event_id, const std::string& error,
+                                     bool permanent, std::string& err);
 
 struct PipelineMetrics {
   std::atomic<uint64_t> enqueued{0};
@@ -81,7 +96,6 @@ class KafkaPipeline {
   void worker_loop();
   bool produce_record(const OutboxRecord& rec, std::string& err);
   static bool is_permanent_error(rd_kafka_resp_err_t err);
-  static int64_t backoff_ms(int attempts);
 
   PipelineConfig cfg_;
   PipelineMetrics metrics_;
