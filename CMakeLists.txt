@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(SQLite3 REQUIRED)
-pkg_check_modules(RDKAFKA REQUIRED rdkafka)
+pkg_check_modules(RDKAFKA REQUIRED rdkafka>=2.0.2)
 
 add_library(event_kafka_core STATIC
   src/kafka_outbox.cpp
@@ -55,3 +55,7 @@ target_link_libraries(order_readback PRIVATE ${RDKAFKA_LIBRARIES})
 
 add_executable(test_ops_interop tests/test_ops_interop.cpp)
 target_link_libraries(test_ops_interop PRIVATE event_kafka_core)
+
+add_test(NAME ops_interop COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_SOURCE_DIR}/tests/run_ops_interop.py $<TARGET_FILE:test_ops_interop>)
+set_tests_properties(outbox ordering drill_tools ops_interop PROPERTIES TIMEOUT 120)

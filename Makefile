@@ -5,16 +5,16 @@ MODCFLAGS = -Wall -Werror
 MODLDFLAGS = -lssl -lsqlite3 -lrdkafka -lpthread 
 
 CXX = g++
-CXXFLAGS = -fPIC -g -ggdb -I/usr/include -Iinclude `pkg-config --cflags freeswitch` $(MODCFLAGS) -std=c++17 -fpermissive -O2
+CXXFLAGS = -fPIC -g -ggdb -I/usr/include -Iinclude `pkg-config --cflags freeswitch rdkafka` $(MODCFLAGS) -std=c++17 -fpermissive -O2
 LDFLAGS = `pkg-config --libs freeswitch` -lrdkafka -lz -lpthread -lrt $(MODLDFLAGS) 
 
 .PHONY: all
 all: $(MODNAME)
 
-$(MODNAME): $(MODOBJ)
+$(MODNAME): $(MODOBJ) | check-deps
 	@$(CXX) -shared -o $@ $(MODOBJ) $(LDFLAGS)
 
-%.o: %.cpp
+%.o: %.cpp | check-deps
 	@$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 .PHONY: clean
@@ -31,3 +31,8 @@ install: $(MODNAME)
 .PHONY: release
 release: $(MODNAME)
 	distribution/make-deb.sh
+
+.PHONY: check-deps
+check-deps:
+	@pkg-config --exists freeswitch || { echo "A real FreeSWITCH SDK is required (see docs/CI-BUILD.md)." >&2; exit 1; }
+	@pkg-config --atleast-version=2.0.2 rdkafka || { echo "librdkafka >= 2.0.2 is required; Debian 9/old librdkafka is unsupported." >&2; exit 1; }
