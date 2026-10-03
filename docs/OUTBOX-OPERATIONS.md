@@ -20,10 +20,15 @@ preconditions. Missing IDs are ungrouped. Distinct legs/IDs are not silently mer
 3. Take a consistent SQLite backup (backup API or stopped writer/checkpoint), including WAL semantics;
    archive old module/config. Do not copy only a live .db file. Inspect states and independent broker
    receipts. Never point both old/new modules at the same DB, nor run both copies as same-call owners.
-4. Fresh/empty legacy DB automatically upgrades to v4. Ordered v2/v3 admission DB preserves cursors.
-   Explicit-source candidate streams cannot be relabeled admission. Nonempty pre-v2 uses the guarded
-   choices below. Set TTL=0 during a deliberate backlog recovery if expiry is not business-authorized;
-   default TTL may turn old records into barriers. No tool silently changes TTL.
+4. Fresh/empty legacy DB automatically upgrades through v5. Ordered v2/v3/v4 admission DB preserves
+   cursors. v5 only adds deliverable-age stamps; it does not invent sequence. Explicit-source candidate
+   streams cannot be relabeled admission. Nonempty pre-v2 uses the guarded choices below. The offline
+   tool still emits an ordered v4 copy for a legacy migrate and does not write `eligible_at_ms`; the
+   module stamps it on the next open, only for the current head and ungrouped rows. Set
+   `outbox-ttl-ms` to 0 during a deliberate backlog recovery or any outage longer than the head's
+   deliverable window if age expiry is not wanted. That 0 disables age expiry only. The default can
+   still turn an already-deliverable old head into a barrier; it does not expire successors that have
+   not become the head. No tool silently changes TTL.
 5. Set outbox path/capacity, preserve key/topic/partition count, start candidate at the agreed boundary.
    Confirm admission-order warning and no state/capacity errors. Validate injected IDs against actual
    consumed partition/offset and assigned ordinal; an empty queue or arrival ratio alone is insufficient.
@@ -103,7 +108,7 @@ source snapshot and keep the old writer stopped. The current module does not hot
 Stop/quiesce admission before rollback. After new admissions/ACKs, an old backup is stale: directly
 restoring it can lose new accepted events or replay old ones out of order. Preserve both databases and
 reconcile IDs/offsets under the new ordering contract, or continue forward with the new core. Original
-legacy binaries ignore cursor/fence semantics; never point them at v4. Before any new admissions,
+legacy binaries ignore cursor/fence semantics; never point them at a v4 or v5 outbox. Before any new admissions,
 restoring the untouched old DB/config is possible only under its old documented guarantee.
 
 One outstanding head per call limits throughput by ACK/poll/SQLite latency; other calls may progress.

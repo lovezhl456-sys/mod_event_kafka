@@ -73,7 +73,7 @@ namespace mod_event_kafka {
         SWITCH_CONFIG_ITEM("outbox-max-rows", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.outbox_max_rows,
                             100000, NULL, "outbox-max-rows", "Max durable outbox rows"),
         SWITCH_CONFIG_ITEM("outbox-ttl-ms", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.outbox_ttl_ms,
-                            120000, NULL, "outbox-ttl-ms", "Expire pending rows older than this; 0 disables"),
+                            120000, NULL, "outbox-ttl-ms", "Expire a deliverable head or ungrouped pending row; 0 disables age expiry"),
         SWITCH_CONFIG_ITEM("message-timeout-ms", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.message_timeout_ms,
                             30000, NULL, "message-timeout-ms", "Topic message.timeout.ms (must be applied)"),
         SWITCH_CONFIG_ITEM("enable-idempotence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.enable_idempotence,

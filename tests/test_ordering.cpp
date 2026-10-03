@@ -383,6 +383,230 @@ void retired_fence_and_released_capacity() {
   }
 }
 
+int64_t next_seq_of(const std::string& path, const std::string& call) {
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+  sqlite3_stmt* q = nullptr;
+  REQUIRE(sqlite3_prepare_v2(db, "SELECT next_seq FROM call_streams WHERE call_uuid=?", -1, &q,
+                             nullptr) == SQLITE_OK);
+  sqlite3_bind_text(q, 1, call.c_str(), -1, SQLITE_TRANSIENT);
+  REQUIRE(sqlite3_step(q) == SQLITE_ROW);
+  const int64_t seq = sqlite3_column_int64(q, 0);
+  sqlite3_finalize(q);
+  sqlite3_close(db);
+  return seq;
+}
+
+// Head in flight or in backoff past TTL must not kill successors. After the head is
+// acknowledged, next_seq lands on a live row.
+void ttl_does_not_stick_on_dead_successor() {
+  const auto path = base + "ttl-successor.db";
+  Outbox b(path, 20, 100000);
+  std::string e;
+  REQUIRE(b.open(e));
+  const int64_t now = wall_now_ms();
+  const int64_t ttl = 120000;
+  auto head = row("C", 0), next = row("C", 1), later = row("C", 2);
+  head.created_at_ms = next.created_at_ms = later.created_at_ms = now - ttl - 5000;
+  REQUIRE(b.insert_pending(head, e));
+  REQUIRE(b.insert_pending(next, e));
+  REQUIRE(b.insert_pending(later, e));
+  auto ungrouped = row("ignored", -1);
+  ungrouped.call_uuid.clear();
+  ungrouped.msg_key.clear();
+  ungrouped.event_id = "free-old";
+  ungrouped.created_at_ms = now - ttl - 100;
+  REQUIRE(b.insert_pending(ungrouped, e));
+
+  REQUIRE(b.expire_ttl(now, 0, e) == 0);
+  REQUIRE(b.mark_in_flight(head.event_id, e));
+  REQUIRE(b.expire_ttl(now, ttl, e) == 1);
+  OutboxRecord got;
+  REQUIRE(b.get(head.event_id, got));
+  REQUIRE(got.state == OutboxState::InFlight);
+  REQUIRE(b.get(next.event_id, got) && got.state == OutboxState::Pending);
+  REQUIRE(b.get(later.event_id, got) && got.state == OutboxState::Pending);
+  REQUIRE(b.get("free-old", got));
+  REQUIRE(got.state == OutboxState::Dead && got.last_error == "expired_ttl");
+  REQUIRE(next_seq_of(path, "C") == 0);
+  REQUIRE(b.mark_acked(head.event_id, e));
+  REQUIRE(b.expire_ttl(now, ttl, e) == 0);
+  auto due = b.fetch_due(now + 1000, 10);
+  REQUIRE(due.size() == 1 && due[0].event_id == next.event_id && due[0].call_seq == 1);
+
+  auto blocked = row("D", 0), successor = row("D", 1);
+  blocked.created_at_ms = successor.created_at_ms = now - ttl - 50;
+  blocked.next_attempt_at_ms = now + 600000;
+  REQUIRE(b.insert_pending(blocked, e));
+  REQUIRE(b.insert_pending(successor, e));
+  REQUIRE(b.expire_ttl(now, ttl, e) == 1);
+  REQUIRE(b.get(blocked.event_id, got));
+  REQUIRE(got.state == OutboxState::Dead && got.last_error == "expired_ttl");
+  REQUIRE(b.get(successor.event_id, got) && got.state == OutboxState::Pending);
+  REQUIRE(next_seq_of(path, "D") == 0);
+  REQUIRE(b.fetch_due(now + 1000, 10).size() == 1);
+  REQUIRE(b.retry_dead(blocked.event_id, e));
+  REQUIRE(b.expire_ttl(now, ttl, e) == 1);
+  REQUIRE(b.get(successor.event_id, got) && got.state == OutboxState::Pending);
+  REQUIRE(b.retry_dead(blocked.event_id, e));
+  REQUIRE(b.mark_in_flight(blocked.event_id, e));
+  REQUIRE(b.mark_acked(blocked.event_id, e));
+  REQUIRE(b.expire_ttl(now, ttl, e) == 0);
+  due = b.fetch_due(now + 100000, 10);
+  bool released = false;
+  for (const auto& rec : due)
+    if (rec.event_id == successor.event_id && rec.call_seq == 1) released = true;
+  REQUIRE(released);
+  REQUIRE(next_seq_of(path, "D") == 1);
+}
+
+void ttl_v4_upgrade_keeps_successor() {
+  const auto path = base + "ttl-v4.db";
+  sqlite3* raw = nullptr;
+  REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
+  const char* ddl =
+      "CREATE TABLE outbox(event_id TEXT PRIMARY KEY,topic TEXT NOT NULL,msg_key TEXT,payload BLOB "
+      "NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at_ms INTEGER "
+      "NOT NULL,last_error TEXT,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,"
+      "call_uuid TEXT,call_seq INTEGER);"
+      "CREATE TABLE call_streams(topic TEXT NOT NULL,call_uuid TEXT NOT NULL,msg_key TEXT NOT NULL,"
+      "mode TEXT NOT NULL,next_seq INTEGER NOT NULL DEFAULT 0,admit_seq INTEGER NOT NULL DEFAULT 0,"
+      "last_served_ms INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(topic,call_uuid));"
+      "PRAGMA user_version=4;"
+      "INSERT INTO call_streams(topic,call_uuid,msg_key,mode,next_seq,admit_seq) "
+      "VALUES('t','old','old','admission',0,2);"
+      "INSERT INTO outbox VALUES('h','t','old','h','pending',0,1,'',1,1,'old',0);"
+      "INSERT INTO outbox VALUES('s','t','old','s','pending',0,1,'',1,1,'old',1);";
+  char* sql_err = nullptr;
+  REQUIRE(sqlite3_exec(raw, ddl, nullptr, nullptr, &sql_err) == SQLITE_OK);
+  sqlite3_free(sql_err);
+  sqlite3_close(raw);
+  Outbox b(path, 10, 100000);
+  std::string e;
+  REQUIRE(b.open(e));
+  OutboxRecord got;
+  REQUIRE(b.get("h", got) && got.call_seq == 0 && got.state == OutboxState::Pending);
+  REQUIRE(b.get("s", got) && got.call_seq == 1 && got.state == OutboxState::Pending);
+  REQUIRE(b.expire_ttl(wall_now_ms(), 10000, e) == 1);
+  REQUIRE(b.get("h", got));
+  REQUIRE(got.state == OutboxState::Dead && got.last_error == "expired_ttl" && got.call_seq == 0);
+  REQUIRE(b.get("s", got) && got.state == OutboxState::Pending && got.call_seq == 1);
+  REQUIRE(b.fetch_due(wall_now_ms() + 1000, 10).empty());
+  REQUIRE(next_seq_of(path, "old") == 0);
+  REQUIRE(b.retry_dead("h", e));
+  REQUIRE(b.mark_in_flight("h", e));
+  REQUIRE(b.mark_acked("h", e));
+  REQUIRE(b.expire_ttl(wall_now_ms(), 10000, e) == 0);
+  auto due = b.fetch_due(wall_now_ms() + 1000, 10);
+  REQUIRE(due.size() == 1 && due[0].event_id == "s" && due[0].call_seq == 1);
+}
+
+void delivery_failure_reaches_dead_without_sticking_successor() {
+  Outbox b(base + "delivery-policy.db", 20, 100000);
+  std::string e;
+  REQUIRE(b.open(e));
+  auto head = row("P", 0), next = row("P", 1);
+  REQUIRE(b.insert_pending(head, e));
+  REQUIRE(b.insert_pending(next, e));
+  const int limit = 3;
+  for (int attempt = 1; attempt <= limit; ++attempt) {
+    REQUIRE(b.mark_in_flight(head.event_id, e));
+    OutboxRecord cur;
+    REQUIRE(b.get(head.event_id, cur) && cur.attempts == attempt);
+    const auto settled =
+        settle_send_failure(b, limit, head.event_id, "broker timeout", false, e);
+    if (attempt < limit) {
+      REQUIRE(settled == SendFailureResult::Retry);
+      auto due = b.fetch_due(wall_now_ms() + 600000, 10);
+      REQUIRE(due.size() == 1 && due[0].event_id == head.event_id);
+    } else {
+      REQUIRE(settled == SendFailureResult::Dead);
+    }
+  }
+  OutboxRecord got;
+  REQUIRE(b.get(head.event_id, got) && got.state == OutboxState::Dead);
+  REQUIRE(b.get(next.event_id, got) && got.state == OutboxState::Pending);
+  REQUIRE(b.fetch_due(wall_now_ms() + 600000, 10).empty());
+  REQUIRE(next_seq_of(base + "delivery-policy.db", "P") == 0);
+  REQUIRE(b.retry_dead(head.event_id, e));
+  REQUIRE(b.mark_in_flight(head.event_id, e));
+  REQUIRE(b.mark_acked(head.event_id, e));
+  auto due = b.fetch_due(wall_now_ms() + 1000, 10);
+  REQUIRE(due.size() == 1 && due[0].event_id == next.event_id && due[0].call_seq == 1);
+  REQUIRE(b.mark_in_flight(next.event_id, e));
+  REQUIRE(b.mark_acked(next.event_id, e));
+
+  auto poison = row("Q", 0), rest = row("Q", 1);
+  REQUIRE(b.insert_pending(poison, e));
+  REQUIRE(b.insert_pending(rest, e));
+  REQUIRE(b.mark_in_flight(poison.event_id, e));
+  REQUIRE(settle_send_failure(b, 50, poison.event_id, "topic authorization failed", true, e) ==
+          SendFailureResult::Dead);
+  REQUIRE(b.get(rest.event_id, got) && got.state == OutboxState::Pending);
+  REQUIRE(b.mark_in_flight(poison.event_id, e) == false);
+  REQUIRE(b.retry_dead(poison.event_id, e));
+  REQUIRE(b.mark_in_flight(poison.event_id, e));
+  REQUIRE(b.mark_acked(poison.event_id, e));
+  due = b.fetch_due(wall_now_ms() + 1000, 10);
+  REQUIRE(due.size() == 1 && due[0].call_seq == 1 && due[0].call_uuid == "Q");
+}
+
+void delivery_report_reaches_dead() {
+  PipelineConfig cfg;
+  cfg.brokers = "127.0.0.1:1";
+  cfg.topic = "delivery-limit";
+  cfg.outbox_path = base + "delivery-report.db";
+  cfg.max_attempts_before_dead = 2;
+  cfg.outbox_ttl_ms = 0;
+  cfg.message_timeout_ms = 400;
+  cfg.poll_ms = 20;
+  cfg.worker_idle_ms = 10;
+  cfg.enable_idempotence = false;
+  KafkaPipeline pipe(cfg);
+  std::string e, head, next;
+  REQUIRE(pipe.start(e));
+  REQUIRE(pipe.enqueue("head", "call", "call", head, e));
+  REQUIRE(pipe.enqueue("next", "call", "call", next, e));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  bool dead = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(cfg.outbox_path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
+      sqlite3_stmt* q = nullptr;
+      if (sqlite3_prepare_v2(db, "SELECT state FROM outbox WHERE event_id=?", -1, &q, nullptr) ==
+          SQLITE_OK) {
+        sqlite3_bind_text(q, 1, head.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(q) == SQLITE_ROW) {
+          const auto* state = sqlite3_column_text(q, 0);
+          if (state && std::string(reinterpret_cast<const char*>(state)) == "dead") dead = true;
+        }
+      }
+      sqlite3_finalize(q);
+      sqlite3_close(db);
+    }
+    if (dead && pipe.metrics().delivery_fail.load() > 0) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  }
+  const auto delivery_fail = pipe.metrics().delivery_fail.load();
+  const auto produce_fail = pipe.metrics().produce_fail.load();
+  pipe.stop();
+  if (!dead || delivery_fail == 0)
+    throw std::runtime_error("delivery report did not reach dead; delivery_fail=" +
+                             std::to_string(delivery_fail) +
+                             " produce_fail=" + std::to_string(produce_fail));
+  Outbox b(cfg.outbox_path, 20, 100000);
+  REQUIRE(b.open(e));
+  OutboxRecord got;
+  REQUIRE(b.get(head, got) && got.state == OutboxState::Dead);
+  REQUIRE(b.get(next, got) && got.state == OutboxState::Pending);
+  REQUIRE(b.fetch_due(wall_now_ms() + 1000, 10).empty());
+  REQUIRE(b.retry_dead(head, e));
+  REQUIRE(b.mark_in_flight(head, e));
+  REQUIRE(b.mark_acked(head, e));
+  auto due = b.fetch_due(wall_now_ms() + 1000, 10);
+  REQUIRE(due.size() == 1 && due[0].event_id == next && due[0].call_seq == 1);
+}
+
 int main() {
   try {
     base = "/tmp/event-kafka-order-" + std::to_string(getpid()) + "/";
@@ -398,10 +622,14 @@ int main() {
     concurrent_stop_admission();
     admission_ordinals_and_reuse();
     retired_fence_and_released_capacity();
+    ttl_does_not_stick_on_dead_successor();
+    ttl_v4_upgrade_keeps_successor();
+    delivery_failure_reaches_dead_without_sticking_successor();
+    delivery_report_reaches_dead();
     fs::remove_all(base);
     std::cout << "ordering: "
                  "heads/backoff/inflight/dead/gaps/concurrency/restart/ownership/TTL/migration/"
-                 "durable admission PASS\n";
+                 "durable admission/successor TTL/delivery attempt limit PASS\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << e.what() << '\n';

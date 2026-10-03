@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS retired_calls(topic TEXT NOT NULL,call_uuid TEXT NOT 
  msg_key TEXT NOT NULL,next_seq INTEGER NOT NULL,retired_at_ms INTEGER NOT NULL,
  reason TEXT NOT NULL,PRIMARY KEY(topic,call_uuid));
 CREATE TABLE IF NOT EXISTS operations_audit(operation_id TEXT PRIMARY KEY,body TEXT NOT NULL);
-PRAGMA user_version=4;
 """
 
 
@@ -85,7 +84,7 @@ def run(args):
             before = fingerprint(db)
             version = db.execute('PRAGMA user_version').fetchone()[0]
             columns = {r[1] for r in db.execute('PRAGMA table_info(outbox)')}
-            if version > 4 or not columns:
+            if version > 5 or not columns:
                 raise ValueError('unsupported schema')
             if args.command == 'migrate':
                 if 'call_seq' in columns:
@@ -94,11 +93,13 @@ def run(args):
                 if states - {'pending', 'in_flight', 'dead'}:
                     raise ValueError('unknown legacy state; manual reconciliation required')
                 db.execute('ALTER TABLE outbox ADD COLUMN call_seq INTEGER')
-            elif version not in (3, 4) or 'call_seq' not in columns:
-                raise ValueError('retirement requires ordered v3/v4 database')
+            elif version not in (3, 4, 5) or 'call_seq' not in columns:
+                raise ValueError('retirement requires an ordered v3, v4, or v5 database')
             db.commit()
             # executescript commits first; everything after BEGIN below is one transaction.
+            # Keep v5. Do not rewrite call_seq or eligible_at_ms; the module stamps eligibility.
             db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA)
+            db.execute('PRAGMA user_version=' + str(4 if version < 4 else int(version)))
             audit = dict(operation=args.command, at_ms=time.time_ns() // 1000000,
                          input_schema=version, input_legacy_fields_sha256=before)
             if args.command == 'migrate':

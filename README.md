@@ -6,7 +6,7 @@ FreeSWITCH Kafka 插件
 
 文档从 [docs/README.md](docs/README.md) 开始。排查故障先看 [覆盖矩阵](docs/FAULT-SCENARIOS.md)，运行演练看 [演练手册](docs/DRILL-RUNBOOK.md)，已跑结果与历史证据只在 [STATUS](docs/STATUS.md) 维护。
 
-当前测试不能穷尽故障，也不代表已在云 Kafka 发布期间验证。特别是默认 2 分钟 TTL 会使旧 pending 事件过期；过期不是补发成功。
+当前测试不能穷尽故障，也不代表已在云 Kafka 发布期间验证。默认 2 分钟 TTL 会使已经可投递的旧头部或无分组 pending 行过期；排在未完成头部后面的后续事件不过期。过期不是补发成功。
 
 配置文件为 `event_kafka.conf.xml`，原有键名保持不变。新增的可选参数：`outbox-path`、`mem-queue-max`、`outbox-max-rows`、`message-timeout-ms`、`enable-idempotence`、`security-protocol`、`ssl-ca-location`。实验室拨测示例见 `lab/event_kafka.fs.conf.xml`。
 

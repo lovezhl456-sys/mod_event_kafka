@@ -81,13 +81,11 @@ void KafkaPipeline::on_delivery(rd_kafka_t* rk, const rd_kafka_message_t* msg, v
   if (msg->err) {
     pipe->metrics_.delivery_fail.fetch_add(1);
     if (msg->err == RD_KAFKA_RESP_ERR__FATAL) pipe->request_rebuild();
-    if (is_permanent_error(msg->err)) {
-      pipe->metrics_.permanent_errors.fetch_add(1);
-      ok = pipe->outbox_->mark_dead(ctx->event_id, rd_kafka_err2str(msg->err), err);
-    } else {
-      ok = pipe->outbox_->mark_retry(ctx->event_id, wall_now_ms() + backoff_ms(1),
-                                     rd_kafka_err2str(msg->err), err);
-    }
+    const auto settled =
+        settle_send_failure(*pipe->outbox_, pipe->cfg_.max_attempts_before_dead, ctx->event_id,
+                            rd_kafka_err2str(msg->err), is_permanent_error(msg->err), err);
+    ok = settled != SendFailureResult::Failed;
+    if (settled == SendFailureResult::Dead) pipe->metrics_.permanent_errors.fetch_add(1);
   } else {
     ok = pipe->outbox_->mark_acked(ctx->event_id, err);
     if (ok) pipe->metrics_.acked.fetch_add(1);
@@ -199,14 +197,12 @@ void KafkaPipeline::worker_loop() {
         }
         metrics_.produce_fail.fetch_add(1);
         if (err.rfind("FATAL:", 0) == 0) request_rebuild();
-        bool ok;
-        if (err.rfind("PERMANENT:", 0) == 0 || rec.attempts + 1 >= cfg_.max_attempts_before_dead) {
-          ok = outbox_->mark_dead(rec.event_id, err, err);
-          metrics_.permanent_errors.fetch_add(1);
-        } else
-          ok = outbox_->mark_retry(rec.event_id, wall_now_ms() + backoff_ms(rec.attempts + 1), err,
-                                   err);
-        if (!ok) throw std::runtime_error(err);
+        const bool permanent = err.rfind("PERMANENT:", 0) == 0;
+        const std::string why = err;
+        const auto settled = settle_send_failure(*outbox_, cfg_.max_attempts_before_dead,
+                                                 rec.event_id, why, permanent, err);
+        if (settled == SendFailureResult::Failed) throw std::runtime_error(err);
+        if (settled == SendFailureResult::Dead) metrics_.permanent_errors.fetch_add(1);
       }
       // A single owner sends, polls, destroys and rebuilds the producer; no borrowed-rk race.
       if (rk_) rd_kafka_poll(rk_, cfg_.poll_ms);
@@ -270,11 +266,27 @@ bool KafkaPipeline::is_permanent_error(rd_kafka_resp_err_t err) {
   }
 }
 
-int64_t KafkaPipeline::backoff_ms(int attempts) {
+int64_t attempt_backoff_ms(int attempts) {
   int64_t base = 200;
   for (int i = 1; i < attempts && i < 8; ++i) base *= 2;
   if (base > 30000) base = 30000;
   return base + (wall_now_ms() % 97);
+}
+
+SendFailureResult settle_send_failure(Outbox& outbox, int max_attempts, const std::string& event_id,
+                                     const std::string& error, bool permanent, std::string& err) {
+  OutboxRecord cur;
+  if (!outbox.get(event_id, cur) || cur.state != OutboxState::InFlight) {
+    err = "send failure for non-in-flight event";
+    return SendFailureResult::Failed;
+  }
+  if (permanent || cur.attempts >= max_attempts) {
+    if (!outbox.mark_dead(event_id, error, err)) return SendFailureResult::Failed;
+    return SendFailureResult::Dead;
+  }
+  if (!outbox.mark_retry(event_id, wall_now_ms() + attempt_backoff_ms(cur.attempts), error, err))
+    return SendFailureResult::Failed;
+  return SendFailureResult::Retry;
 }
 
 }  // namespace event_kafka

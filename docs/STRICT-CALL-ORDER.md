@@ -46,14 +46,30 @@ pending, due row; it does not discard the cursor when an older row is in flight,
 or absent. `mark_in_flight` rechecks the head. An ACK atomically advances the cursor and deletes
 that same in-flight row. A failure returns that row to pending without changing its sequence.
 
-Synchronous permanent produce errors and permanent delivery errors mark the original row dead.
-TTL also marks rows dead. For a call, these rows are **barriers**, not capacity-reclaim candidates.
-Later rows cannot be sent past them. Ungrouped TTL rows retain their previous reclaim behavior.
-An operator can stop the pipeline and call `Outbox::retry_dead(id)` to retry the **same** event after
-fixing its cause. For TTL, first explicitly choose a suitable TTL policy; retrying does not falsify
-`created_at_ms`. An irreparable poison event quarantines the entire call. No automatic skip/delete,
-renumbering, or gap-ack API is provided. Releasing a poison call by discarding a source event would
-require an explicitly approved business gap/compensation protocol outside this change.
+Synchronous produce failures and delivery-report failures use one policy. A permanent broker error,
+or a durable attempt count that has reached `max_attempts_before_dead` (default 50), marks that
+in-flight row dead. Every other failure returns the same row to pending with the same attempt-based
+backoff. The delivery-report path does not ignore the attempt limit. The module does not expose a
+separate FreeSWITCH XML key for the limit; the pipeline default applies.
+
+`outbox-ttl-ms` (default 120000) expires only a pending row that is already deliverable: an ungrouped
+row, or the ordered row whose `call_seq` is `next_seq`. Age is `(now - eligible_at_ms)`, and that
+timestamp is set when the row becomes deliverable — at admission if it is already the head, or when
+the previous head is acknowledged. Time spent waiting behind an earlier event does not expire a
+successor, including while the head is in flight or in backoff. An in-flight row is not expired in
+place. Expiry uses a strict greater-than comparison. A dead head remains a barrier. Its successors
+stay pending and become deliverable only after that same head is acknowledged, so `next_seq` is not
+left on a dead row that never became the head. Set `outbox-ttl-ms` to **0** to disable age expiry
+during an outage longer than the head's deliverable window. Zero does not disable the attempt limit.
+Retrying a TTL-dead head does not reset `eligible_at_ms` or `created_at_ms`; raise the TTL or set 0
+before that retry, or the next scan expires the head again.
+
+For a call, dead and TTL rows are **barriers**, not capacity-reclaim candidates. Later rows cannot be
+sent past them. Ungrouped TTL rows retain their previous reclaim behavior. An operator can stop the
+pipeline and call `Outbox::retry_dead(id)` to retry the **same** event after fixing its cause. An
+irreparable poison event quarantines the entire call. No automatic skip/delete, renumbering, or
+gap-ack API is provided. Releasing a poison call by discarding a source event would require an
+explicitly approved business gap/compensation protocol outside this change.
 
 A single worker owns produce, poll and producer lifecycle operations. Delivery callbacks request
 rebuild; they never destroy their own producer. Rebuild purges and services the old producer's
@@ -72,14 +88,17 @@ order, raw nondecreasing order, per-call partition, payload sequence and header 
 
 ## Upgrade, capacity and rollback
 
-Schema version 4 adds permanent explicit-retirement fences. Version 3 introduced the durable scheduler turn. Version 2 added `outbox.call_seq`, a unique `(topic,call_uuid,call_seq)` index, and durable
+Schema version 5 adds `outbox.eligible_at_ms`, the time a row became deliverable. Upgrade stamps
+`created_at_ms` onto that column only for a row that is already the current head or ungrouped.
+Successors stay unstamped until the cursor reaches them. No call sequence is created or rewritten.
+Version 4 adds permanent explicit-retirement fences. Version 3 introduced the durable scheduler turn. Version 2 added `outbox.call_seq`, a unique `(topic,call_uuid,call_seq)` index, and durable
 `call_streams` cursors/key/mode. Fresh and **empty** legacy outboxes upgrade transactionally.
 A v2 outbox upgrades transactionally with existing cursors preserved; the scheduler starts above its retained service timestamps. A nonempty pre-v2 legacy outbox fails closed before schema migration; its source order cannot be proved.
 Back it up, preserve its WAL consistently, reconcile it against original source/consumer evidence,
 and explicitly drain/quarantine it before upgrade. Never fabricate source sequence during migration.
 Unknown future schema versions and missing ordered cursors also fail closed.
 
-Do not point an old binary at a v4 outbox: it does not know the cursor rules. Rollback needs a stopped
+Do not point an old binary at a v4 or v5 outbox: it does not know the cursor or deliverable-age rules. Rollback needs a stopped
 publisher and a separately reconciled backup, not an automatic downgrade. No production migration
 has been executed by this work.
 
@@ -115,8 +134,12 @@ between partition counts, topics or independent producers. Do not change them du
 
 `test_ordering` covers head-only scheduling, backoff/in-flight/dead blocking, source gaps,
 concurrent admission, exact cursor recovery, ownership, TTL barriers, empty/blocked migration and
-durable admission. The existing outbox TTL tests now isolate independent streams where their purpose
-is a TTL boundary; the new tests explicitly assert that expiry cannot unblock a same-call successor.
+durable admission. Expiry of an in-flight or backoff head does not kill same-call successors, and
+after that head is acknowledged the next row is deliverable instead of leaving `next_seq` on a dead
+non-head. A v4 database gains `eligible_at_ms` without a new sequence. Delivery-report failures use
+the same attempt limit as synchronous produce failures: a non-permanent delivery failure can reach
+dead, the successor stays pending, and acknowledging the dead head releases it. `ctest` also runs
+`ops_interop`. These tests do not load FreeSWITCH or place real calls.
 
 CMake builds `test_ordering_drill` and `order_readback`. The cloud also directly compiled both core
 sources and unit tests with ASan/UBSan, and built the actual module with the saved SDK. The broker
@@ -163,7 +186,7 @@ consistent backup mechanism or after a clean stopped/checkpointed writer; copyin
 WAL is active is not sufficient. Production execution is outside this patch.
 
 A nonempty historical candidate DB in explicit `source` mode also cannot be relabeled `admission`:
-the mode/key guard rejects that conversion. V2 admission-mode DBs upgrade to v4 preserving every
-cursor; future schema versions are refused. Never run an original pre-ordering binary against the
+the mode/key guard rejects that conversion. V2 admission-mode DBs upgrade through v5, preserving every
+cursor and without inventing sequence. Schema versions above 5 are refused. Never run an original pre-ordering binary against the
 new DB or delete cursor rows to make an upgrade succeed. The unit migration tests verify the legacy
 nonempty refusal and cursor-preserving ordered upgrade; no production backlog is claimed migrated.

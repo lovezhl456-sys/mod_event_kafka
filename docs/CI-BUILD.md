@@ -91,10 +91,18 @@ and compiled outputs. Cold/hot builds and negative failure-propagation tests mus
 candidate head; old successful results are not new-head validation. Inspect only newly generated
 images/cache used for the experiment, never historical potentially secret-bearing layers.
 
-## PR16 is a separate proposal
+## Deliverable-age TTL and one retry budget
 
-This CI change is based on PR15 `c7111d2`; it does not merge or rewrite PR16 `530ab32`. PR16 proposes
-TTL eligible-age/schema5 and retry-budget semantics in addition to test wiring/cache changes.
-Those business/state transitions need a separate review, explicit integration decision and fresh
-broker validation; their existence is not proof they passed. This patch independently wires the
-existing real interoperability harness into CTest and keeps the accepted module-admission contract.
+Public CI stays the secretless Debian bookworm workflow: checkout v6 only, no `debian:9`, no
+`actions/cache` v2, no repository secret, and the same ctest targets (`outbox`, `ordering`,
+`drill_tools`, `ops_interop`) plus the separate real public FreeSWITCH SDK compile job.
+
+Schema user_version 5 adds `eligible_at_ms`. Age expiry removes only a pending row that is already
+deliverable: ungrouped, or the ordered row whose `call_seq` equals that call's `next_seq`. Time spent
+waiting behind an in-flight, retrying, or dead head does not count. An in-flight head is not expired
+in place. A dead head stays a barrier and does not advance the cursor. `outbox-ttl-ms` 0 disables age
+expiry only. Synchronous produce failures and delivery-report failures share one policy: a permanent
+broker error, or a durable attempt count that has reached `max_attempts_before_dead`, marks that
+in-flight row dead; other failures retry with the same backoff. Retrying a TTL-dead row does not reset
+how long it has been deliverable. These checks do not load FreeSWITCH or establish a production incident
+cause.
