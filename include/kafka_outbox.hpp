@@ -19,6 +19,8 @@ struct OutboxRecord {
   int64_t created_at_ms{0};
   int64_t updated_at_ms{0};
   std::string call_uuid;
+  // -1: allocate durable admission order; >=0: contiguous source sequence, starting at 0.
+  int64_t call_seq{-1};
 };
 
 struct OutboxStats {
@@ -38,19 +40,21 @@ class Outbox {
   bool open(std::string& err);
   void close();
 
-  bool insert_pending(const OutboxRecord& rec, std::string& err);
+  bool insert_pending(const OutboxRecord& rec, std::string& err, int64_t* assigned_sequence = nullptr);
+  bool retry_dead(const std::string& event_id, std::string& err);
   std::vector<OutboxRecord> fetch_due(int64_t now_ms, int limit);
   bool mark_in_flight(const std::string& event_id, std::string& err);
   bool mark_acked(const std::string& event_id, std::string& err);
-  bool mark_retry(const std::string& event_id, int64_t next_ms,
-                  const std::string& error, std::string& err);
-  bool mark_dead(const std::string& event_id, const std::string& error,
-                 std::string& err);
+  bool mark_retry(const std::string& event_id, int64_t next_ms, const std::string& error,
+                  std::string& err);
+  bool mark_dead(const std::string& event_id, const std::string& error, std::string& err);
   bool requeue_in_flight(std::string& err);
 
-  // 将满足 (now_ms - created_at_ms) > ttl_ms 的 pending 行置为 dead / expired_ttl。
-  // ttl_ms <= 0 时不做过期处理，返回 0。成功时返回更新的行数，出错返回 -1。
-  // in-flight 行不在此处理，交由 ACK 或重试路径。
+  // Expire a pending row only when it is already deliverable and
+  // (now_ms - eligible_at_ms) > ttl_ms. Deliverable means ungrouped, or the
+  // ordered row whose call_seq is call_streams.next_seq. Successors waiting
+  // behind that head are left pending. ttl_ms <= 0 disables expiry and returns 0.
+  // In-flight rows are not expired here. Returns the number of rows updated, or -1.
   int expire_ttl(int64_t now_ms, int64_t ttl_ms, std::string& err);
   bool get(const std::string& event_id, OutboxRecord& out) const;
 
@@ -65,4 +69,4 @@ class Outbox {
 std::string make_event_id();
 int64_t wall_now_ms();
 
-}  // 命名空间 event_kafka
+}  // namespace event_kafka

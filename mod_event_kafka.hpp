@@ -24,6 +24,7 @@ namespace mod_event_kafka {
 		int outbox_max_rows;
 		int message_timeout_ms;
 		int enable_idempotence;
+		int require_source_sequence;
 		/* 0 表示关闭过期；解析配置时套用的默认值为 120000。 */
 		int outbox_ttl_ms;
 	} globals;

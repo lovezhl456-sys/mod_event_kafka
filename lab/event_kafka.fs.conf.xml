@@ -14,8 +14,8 @@
 		<param name="outbox-path" value="/usr/local/freeswitch/var/lib/freeswitch/db/event_kafka_outbox.db"/>
 		<param name="mem-queue-max" value="10000"/>
 		<param name="outbox-max-rows" value="100000"/>
-		<!-- 存在时间超过该值（毫秒）的 pending 行会被标为 dead（expired_ttl），不再投递。
-		     0 表示关闭。默认 120000（2 分钟）。时长在 TTL 以内的中断，Kafka 恢复后仍会排空，无需 reload。 -->
+		<!-- 只过期可投递头部或无分组 pending 行。后续事件在成为头部之前不过期。
+		     0 关闭按年龄过期（长中断开关），不关闭尝试次数上限。默认 120000。 -->
 		<param name="outbox-ttl-ms" value="120000"/>
 		<param name="message-timeout-ms" value="30000"/>
 		<param name="enable-idempotence" value="1"/>

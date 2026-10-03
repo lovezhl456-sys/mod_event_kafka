@@ -11,13 +11,19 @@
 		<!-- 新增的可选配置：可靠性 / 安全。省略的键使用模块默认值。
 		     实验室拨测示例（toxiproxy bootstrap、CHANNEL_* 过滤）：lab/event_kafka.fs.conf.xml -->
 		<param name="outbox-path" value="/var/lib/freeswitch/event_kafka_outbox.db"/>
+		<!-- Deprecated: admissions now commit synchronously to SQLite; this memory limit is not used. -->
 		<param name="mem-queue-max" value="10000"/>
 		<param name="outbox-max-rows" value="100000"/>
-		<!-- 存在时间超过该值（毫秒）的 pending 行会被标为 dead（expired_ttl），不再投递。
-		     0 表示关闭。默认 120000（2 分钟）。时长在 TTL 以内的中断，Kafka 恢复后仍会排空，无需 reload。 -->
+		<!-- 只过期已经可投递的 pending 行：无通话分组的行，或 next_seq 指向的通话头部。
+		     排在头部后面的后续事件不会因为等待而过期，头部确认后才开始计算它们的可投递年龄。
+		     头部过期仍是屏障，不跳过。0 关闭按年龄过期，供长于该窗口的中断使用；0 不关闭尝试次数上限。
+		     默认 120000。重试已过期头部不会重置可投递年龄，重试前把本值调大或设为 0。 -->
 		<param name="outbox-ttl-ms" value="120000"/>
 		<param name="message-timeout-ms" value="30000"/>
 		<param name="enable-idempotence" value="1"/>
+		<!-- This module orders successful durable admissions per Channel-Call-UUID.
+             Earlier FS creation/fire order is not guaranteed. No new FS header is required.
+             Legacy require-source-sequence is ignored; Kafka-Call-Sequence is payload only. -->
 		<param name="security-protocol" value=""/> <!-- PLAINTEXT / SASL_PLAINTEXT / SASL_SSL / SSL；留空 = 自动选择 -->
 		<param name="ssl-ca-location" value=""/>
 	</settings>

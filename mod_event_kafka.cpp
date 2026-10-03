@@ -35,6 +35,8 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <charconv>
+#include <cstring>
 #include <memory>
 #include <switch.h>
 #include "mod_event_kafka.hpp"
@@ -71,11 +73,13 @@ namespace mod_event_kafka {
         SWITCH_CONFIG_ITEM("outbox-max-rows", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.outbox_max_rows,
                             100000, NULL, "outbox-max-rows", "Max durable outbox rows"),
         SWITCH_CONFIG_ITEM("outbox-ttl-ms", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.outbox_ttl_ms,
-                            120000, NULL, "outbox-ttl-ms", "Expire pending rows older than this; 0 disables"),
+                            120000, NULL, "outbox-ttl-ms", "Expire a deliverable head or ungrouped pending row; 0 disables age expiry"),
         SWITCH_CONFIG_ITEM("message-timeout-ms", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.message_timeout_ms,
                             30000, NULL, "message-timeout-ms", "Topic message.timeout.ms (must be applied)"),
         SWITCH_CONFIG_ITEM("enable-idempotence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.enable_idempotence,
                             1, NULL, "enable-idempotence", "librdkafka enable.idempotence"),
+        SWITCH_CONFIG_ITEM("require-source-sequence", SWITCH_CONFIG_INT, CONFIG_RELOADABLE, &globals.require_source_sequence,
+                            0, NULL, "require-source-sequence", "Deprecated; ignored by FS adapter (durable admission order)"),
         SWITCH_CONFIG_ITEM("security-protocol", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.security_protocol,
                             "", NULL, "security-protocol", "PLAINTEXT/SASL_PLAINTEXT/SASL_SSL/SSL"),
         SWITCH_CONFIG_ITEM("ssl-ca-location", SWITCH_CONFIG_STRING, CONFIG_RELOADABLE, &globals.ssl_ca_location,
@@ -124,6 +128,7 @@ namespace mod_event_kafka {
             cfg.outbox_max_rows = globals.outbox_max_rows > 0 ? globals.outbox_max_rows : 100000;
             cfg.message_timeout_ms = globals.message_timeout_ms > 0 ? globals.message_timeout_ms : 30000;
             cfg.enable_idempotence = globals.enable_idempotence != 0;
+            cfg.require_source_sequence = false; // FS glue always assigns a durable module admission ordinal.
             // 0 表示关闭过期；负值视为未配置，使用默认值。
             cfg.outbox_ttl_ms = globals.outbox_ttl_ms < 0 ? 120000 : globals.outbox_ttl_ms;
 
@@ -131,8 +136,11 @@ namespace mod_event_kafka {
             std::string err;
             if (!pipeline_->start(err)) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "KafkaPipeline start failed: %s\n", err.c_str());
-                _initialized = false;
-                return;
+                throw std::runtime_error("KafkaPipeline start failed: " + err);
+            }
+            if (!cfg.require_source_sequence) {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+                    "Kafka ordering mode: durable module ADMISSION order only; earlier FS source order is NOT guaranteed. require-source-sequence is deprecated and ignored by this module.\n");
             }
             _initialized = true;
         }
@@ -159,16 +167,21 @@ namespace mod_event_kafka {
             std::string call_uuid = key;
             std::string event_id;
             std::string err;
-            const bool ok = pipeline_->enqueue(payload, key, call_uuid, event_id, err);
+            // The transaction commit is the linearization point. Callback entry time,
+            // Event-Sequence, timestamps and custom headers do not define this order.
+            int64_t assigned_sequence = -1;
+            const bool ok = pipeline_->enqueue(payload, key, call_uuid, event_id, err, -1,
+                                                &assigned_sequence);
             std::free(event_json);
             if (!ok) {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-                                  "event enqueue rejected (%s); metrics rejected_mem=%llu\n",
+                                  "event admission rejected (%s); metrics rejected_disk_or_order=%llu\n",
                                   err.c_str(),
-                                  (unsigned long long)pipeline_->metrics().rejected_mem_full.load());
+                                  (unsigned long long)pipeline_->metrics().rejected_disk_full.load());
             } else {
                 switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
-                                  "enqueued event_id=%s key=%s\n", event_id.c_str(), key.c_str());
+                                  "enqueued event_id=%s key=%s admission_sequence=%lld\n", event_id.c_str(), key.c_str(),
+                                  (long long)assigned_sequence);
             }
         }
 
