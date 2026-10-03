@@ -72,14 +72,14 @@ order, raw nondecreasing order, per-call partition, payload sequence and header 
 
 ## Upgrade, capacity and rollback
 
-Schema version 3 retains the v2 ordering state and adds a durable scheduler turn. Version 2 added `outbox.call_seq`, a unique `(topic,call_uuid,call_seq)` index, and durable
+Schema version 4 adds permanent explicit-retirement fences. Version 3 introduced the durable scheduler turn. Version 2 added `outbox.call_seq`, a unique `(topic,call_uuid,call_seq)` index, and durable
 `call_streams` cursors/key/mode. Fresh and **empty** legacy outboxes upgrade transactionally.
 A v2 outbox upgrades transactionally with existing cursors preserved; the scheduler starts above its retained service timestamps. A nonempty pre-v2 legacy outbox fails closed before schema migration; its source order cannot be proved.
 Back it up, preserve its WAL consistently, reconcile it against original source/consumer evidence,
 and explicitly drain/quarantine it before upgrade. Never fabricate source sequence during migration.
 Unknown future schema versions and missing ordered cursors also fail closed.
 
-Do not point an old binary at a v3 outbox: it does not know the cursor rules. Rollback needs a stopped
+Do not point an old binary at a v4 outbox: it does not know the cursor rules. Rollback needs a stopped
 publisher and a separately reconciled backup, not an automatic downgrade. No production migration
 has been executed by this work.
 
@@ -89,16 +89,17 @@ not used by this path. Outbox row and payload-byte limits remain hard admission 
 stream metadata is separately limited to `outbox-max-rows` streams. The payload-byte limit is **not**
 a cap on SQLite pages, indexes, WAL, keys or total filesystem use. Monitor and reserve disk space.
 
-Completed cursors deliberately remain, so a restart cannot restart an old call at sequence zero.
-They are not silently GC'd: after the stream limit, new calls are explicitly refused. There is no safe universal closure signal in the currently known event contract: one leg's
-HANGUP/DESTROY or an idle timeout is insufficient. Under the no-FS-change constraint, automatic
-retirement remains disabled. Reuse/late events on the same ID continue the existing ordinal (and
-remain behind a poison barrier); this does not assert they are the same business call. A future
-operator-approved retirement workflow must first quiesce admission, drain/reconcile every row,
-archive a consistent DB and establish a new explicitly named stream epoch/topic or durable replay
-fence. Deleting a cursor in place resets ordering and is not an acceptable cleanup procedure.
-Business event filters/whole-call closure information may permit a narrower module-only policy,
-but that has not been assumed or implemented. Raising the limit trades storage for a longer retention horizon.
+Completed cursors remain by default: no timeout or leg event triggers deletion. Explicit offline
+retirement is now available through `scripts/outbox_ops.py`, producing a new DB copy only. It requires
+an empty stream with next_seq=admit_seq, an operator reason, and explicit acceptance that this exact
+(topic,call ID) must **never** be admitted again. It moves the active cursor to a permanent
+`retired_calls` fence, releasing one active slot without permitting sequence reset. Any late/reused ID
+is visibly rejected, including after restart. The tool refuses pending/in-flight/dead/TTL rows and
+unresolved gaps. This is an operator policy, not inferred business closure; without closure knowledge,
+use monitoring/capacity increases instead. Retirement fences also have a tool-enforced configured
+row limit; they are never evicted. Each active/fence limit uses the supplied `outbox-max-rows`, so the
+two tables may together contain twice that many identities. Audit history, keys and SQLite/WAL bytes
+need separate filesystem monitoring. See [operations runbook](OUTBOX-OPERATIONS.md).
 
 Per-call throughput is bounded by one successful head at a time, broker ACK latency, polling and
 SQLite commits. Other calls can progress; head selection uses least-recently-served durable call turn before
@@ -162,7 +163,7 @@ consistent backup mechanism or after a clean stopped/checkpointed writer; copyin
 WAL is active is not sufficient. Production execution is outside this patch.
 
 A nonempty historical candidate DB in explicit `source` mode also cannot be relabeled `admission`:
-the mode/key guard rejects that conversion. V2 admission-mode DBs upgrade to v3 preserving every
+the mode/key guard rejects that conversion. V2 admission-mode DBs upgrade to v4 preserving every
 cursor; future schema versions are refused. Never run an original pre-ordering binary against the
 new DB or delete cursor rows to make an upgrade succeed. The unit migration tests verify the legacy
 nonempty refusal and cursor-preserving ordered upgrade; no production backlog is claimed migrated.

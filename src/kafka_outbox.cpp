@@ -150,7 +150,7 @@ bool Outbox::open(std::string& err) {
     {
       Statement v(impl_->db, "PRAGMA user_version");
       v.row();
-      if (v.integer(0) > 3) throw std::runtime_error("unsupported outbox schema version");
+      if (v.integer(0) > 4) throw std::runtime_error("unsupported outbox schema version");
     }
     sql(impl_->db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
     Transaction tx(impl_->db);
@@ -168,7 +168,10 @@ bool Outbox::open(std::string& err) {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_seq ON outbox(topic,call_uuid,call_seq);"
         "CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(state,next_attempt_at_ms);"
         "CREATE INDEX IF NOT EXISTS idx_outbox_ttl ON outbox(state,created_at_ms); PRAGMA "
-        "user_version=3;"
+        "user_version=4;"
+        "CREATE TABLE IF NOT EXISTS retired_calls(topic TEXT NOT NULL,call_uuid TEXT NOT NULL,"
+        "msg_key TEXT NOT NULL,next_seq INTEGER NOT NULL,retired_at_ms INTEGER NOT NULL,"
+        "reason TEXT NOT NULL,PRIMARY KEY(topic,call_uuid));"
         "CREATE TABLE IF NOT EXISTS order_scheduler(id INTEGER PRIMARY KEY CHECK(id=1),turn "
         "INTEGER NOT NULL);"
         "INSERT OR IGNORE INTO order_scheduler SELECT 1,COALESCE(MAX(last_served_ms),0) FROM "
@@ -181,6 +184,12 @@ bool Outbox::open(std::string& err) {
                   "NULL OR s.call_uuid IS NULL)");
       q.row();
       if (q.integer(0)) throw std::runtime_error("corrupt ordered outbox/cursor");
+    }
+    {
+      Statement q(impl_->db, "SELECT count(*) FROM retired_calls r JOIN call_streams s ON "
+                            "r.topic=s.topic AND r.call_uuid=s.call_uuid");
+      q.row();
+      if (q.integer(0)) throw std::runtime_error("retired call still has active cursor");
     }
     tx.commit();
     return true;
@@ -205,6 +214,14 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* 
   std::lock_guard<std::mutex> lock(impl_->mu);
   try {
     Transaction tx(impl_->db);
+    if (!rec.call_uuid.empty()) {
+      {
+        Statement retired(impl_->db, "SELECT 1 FROM retired_calls WHERE topic=? AND call_uuid=?");
+        retired.bind(1, rec.topic);
+        retired.bind(2, rec.call_uuid);
+        if (retired.row()) throw std::runtime_error("call explicitly retired; reuse/late admission rejected");
+      }
+    }
     // Only ungrouped TTL rows may be reclaimed. Ordered dead rows are durable barriers.
     {
       Statement q(impl_->db, "SELECT count(*),COALESCE(sum(length(payload)),0) FROM outbox");
@@ -244,7 +261,7 @@ bool Outbox::insert_pending(const OutboxRecord& rec, std::string& err, int64_t* 
           count.row();
           if (count.integer(0) >= impl_->max_rows)
             throw std::runtime_error(
-                "stream capacity exceeded; explicit completed-call retirement required");
+                "stream capacity exceeded; inspect capacity; raise limit or explicitly retire proven closed calls");
           Statement create(
               impl_->db, "INSERT INTO call_streams(topic,call_uuid,msg_key,mode) VALUES(?,?,?,?)");
           create.bind(1, rec.topic);

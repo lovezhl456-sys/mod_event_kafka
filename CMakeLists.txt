@@ -52,3 +52,6 @@ add_executable(order_readback tests/order_readback.cpp)
 target_include_directories(order_readback PRIVATE ${RDKAFKA_INCLUDE_DIRS})
 target_link_directories(order_readback PRIVATE ${RDKAFKA_LIBRARY_DIRS})
 target_link_libraries(order_readback PRIVATE ${RDKAFKA_LIBRARIES})
+
+add_executable(test_ops_interop tests/test_ops_interop.cpp)
+target_link_libraries(test_ops_interop PRIVATE event_kafka_core)

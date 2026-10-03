@@ -355,6 +355,34 @@ void admission_ordinals_and_reuse() {
   REQUIRE(assigned == 65); // Failed transaction did not consume a sequence.
 }
 
+void retired_fence_and_released_capacity() {
+  const auto path = base + "retired.db";
+  std::string e;
+  {
+    Outbox b(path, 1, 10000);
+    REQUIRE(b.open(e));
+    auto r = row("closed", 0); r.call_seq = -1;
+    REQUIRE(b.insert_pending(r, e));
+    REQUIRE(b.mark_in_flight(r.event_id, e)); REQUIRE(b.mark_acked(r.event_id, e));
+    REQUIRE(!b.insert_pending(row("other", 0), e)); // active cursor cap despite empty queue
+  }
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db, "BEGIN; INSERT INTO retired_calls SELECT topic,call_uuid,msg_key,"
+                          "next_seq,1,'explicit test closure' FROM call_streams; DELETE FROM "
+                          "call_streams; COMMIT;", nullptr,nullptr,nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+  for (int restart = 0; restart < 2; ++restart) {
+    Outbox b(path, 1, 10000);
+    REQUIRE(b.open(e));
+    auto reused = row("closed", 99); reused.call_seq = -1;
+    REQUIRE(!b.insert_pending(reused, e));
+    REQUIRE(e.find("retired") != std::string::npos);
+    if (!restart) REQUIRE(b.insert_pending(row("other", 0), e));
+    REQUIRE(b.fetch_due(wall_now_ms()+1000, 10).size() == 1);
+  }
+}
+
 int main() {
   try {
     base = "/tmp/event-kafka-order-" + std::to_string(getpid()) + "/";
@@ -369,6 +397,7 @@ int main() {
     scheduler_upgrade_and_fairness();
     concurrent_stop_admission();
     admission_ordinals_and_reuse();
+    retired_fence_and_released_capacity();
     fs::remove_all(base);
     std::cout << "ordering: "
                  "heads/backoff/inflight/dead/gaps/concurrency/restart/ownership/TTL/migration/"
