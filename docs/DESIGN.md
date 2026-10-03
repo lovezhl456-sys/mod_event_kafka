@@ -23,11 +23,11 @@ FS 事件 → JSON/key 深拷贝 → 有界内存队列
 
 | 路径 | 当前处理 / 边界 |
 |---|---|
-| 普通 delivery 失败 | pending + 退避；仍需验证具体错误分类和重试节奏 |
+| 普通 produce / delivery 失败 | 同一策略：未到 `max_attempts_before_dead`（默认 50）则 pending + 按尝试次数退避；到达上限则 dead |
 | topic/cluster 授权、INVALID_MSG、消息过大 | `is_permanent_error` 中列为 dead |
 | +87 INVALID_RECORD | 当前未列为永久错误；不能承诺自动修正非法记录 |
 | fatal | 触发 producer 重建；安全性仍需专门并发测试，普通断连通过不代表此路径通过 |
-| 超 TTL 的 pending | dead / `expired_ttl`，不会继续发送 |
+| 已可投递且年龄超过 TTL 的 pending 头部或无分组行 | dead / `expired_ttl`。还排在头部后面的后续事件不过期。0 只关闭按年龄过期 |
 | outbox INSERT 失败 | 递增 `rejected_disk_full`；当前还缺按事件 ID 的持久拒绝记录，不能宣称完整拒绝闭环 |
 
 ## FS XML 配置
@@ -39,7 +39,7 @@ FS 事件 → JSON/key 深拷贝 → 有界内存队列
 | outbox-path | `/var/lib/freeswitch/event_kafka_outbox.db` | FS 用户可写的 SQLite 文件 |
 | mem-queue-max | 10000 | 内存队列条数 |
 | outbox-max-rows | 100000 | outbox 行数上限 |
-| outbox-ttl-ms | 120000 | pending 的最大年龄；0 关闭过期 |
+| outbox-ttl-ms | 120000 | 已可投递头部或无分组 pending 行的最大年龄；0 关闭按年龄过期，不关闭尝试次数上限 |
 | message-timeout-ms | 30000 | 一次 librdkafka 投递生命周期上限，已传入 topic 配置 |
 | enable-idempotence | 1 | producer 幂等开关，不等于跨重建/业务端恰好一次 |
 | security-protocol | 自动 | 有用户名则 SASL_PLAINTEXT，否则 PLAINTEXT |

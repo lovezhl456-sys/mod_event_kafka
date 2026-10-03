@@ -256,7 +256,7 @@ static void test_baseline_smoke() {
     CHECK(!box.insert_pending(r3, err));
 
     auto due = box.fetch_due(event_kafka::wall_now_ms() + 1000, 10);
-    CHECK(due.size() == 2);
+    CHECK(due.size() == 1); // only the durable call head is eligible
     CHECK(due[0].event_id == r1.event_id);
 
     CHECK(box.mark_in_flight(r1.event_id, err));
@@ -324,7 +324,9 @@ static void test_outbox_ttl() {
   auto eq = make_row("ttl-eq", "{\"Event-Name\":\"CHANNEL_ANSWER\"}", now - ttl);
   auto fresh = make_row("ttl-fresh", "{\"Event-Name\":\"CHANNEL_CREATE\"}", now);
   CHECK(box.insert_pending(over, err));
+  eq.call_uuid = "ttl-eq-call";
   CHECK(box.insert_pending(eq, err));
+  fresh.call_uuid = "ttl-fresh-call";
   CHECK(box.insert_pending(fresh, err));
 
   CHECK(box.expire_ttl(now, ttl, err) == 1);
@@ -346,7 +348,9 @@ static void test_outbox_ttl() {
 
   // in-flight 行仍走 ACK 路径。过期处理既不会删除它们，也不会把它们置为死信。
   auto inflight = make_row("ttl-inflight", "{\"n\":1}", now - ttl - 50);
+  inflight.call_uuid = "inflight-call";
   CHECK(box.insert_pending(inflight, err));
+  // Its own call isolates in-flight TTL semantics.
   CHECK(box.mark_in_flight("ttl-inflight", err));
   CHECK(box.expire_ttl(now, ttl, err) == 0);
   CHECK(box.get("ttl-inflight", got));
@@ -356,6 +360,7 @@ static void test_outbox_ttl() {
 
   // 超过 TTL 之后因重试退回 pending 的行会被置为过期，不再进入可投递（due）集合。
   auto retry = make_row("ttl-retry", "{\"n\":2}", now - ttl - 10);
+  retry.call_uuid = "retry-call";
   CHECK(box.insert_pending(retry, err));
   CHECK(box.mark_in_flight("ttl-retry", err));
   CHECK(box.mark_retry("ttl-retry", now, "broker down", err));
@@ -399,6 +404,7 @@ static void test_expired_does_not_block_new_work() {
   CHECK(box.mark_dead("perm-dead", "auth failed", err));
 
   auto expired = make_row("exp-dead", "e", now - ttl - 1);
+  expired.call_uuid.clear(); // ungrouped TTL reclamation remains supported
   CHECK(box.insert_pending(expired, err));
   CHECK(box.expire_ttl(now, ttl, err) == 1);
   CHECK(box.stats().dead == 2);
@@ -426,6 +432,7 @@ static void test_expired_does_not_block_new_work() {
   event_kafka::Outbox bytes(db_bytes, 100, /*max_bytes=*/48);
   CHECK(bytes.open(err));
   auto fat = make_row("fat-exp", std::string(40, 'a'), now - ttl - 1);
+  fat.call_uuid.clear();
   CHECK(bytes.insert_pending(fat, err));
   CHECK(bytes.expire_ttl(now, ttl, err) == 1);
   auto neu = make_row("neu", std::string(40, 'b'), now);

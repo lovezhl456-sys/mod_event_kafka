@@ -1,0 +1,8 @@
+ca-certificates=20250419~deb12u1
+build-essential=12.9
+cmake=3.25.1-1
+ninja-build=1.11.1-2~deb12u1
+pkg-config=1.8.1-1
+python3=3.11.2-1+b1
+librdkafka-dev=2.0.2-1
+libsqlite3-dev=3.40.1-2+deb12u2
