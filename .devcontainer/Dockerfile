@@ -9,14 +9,11 @@ RUN apt-get update \
 WORKDIR /src
 
 FROM core-deps AS core-ci
-COPY CMakeLists.txt ./
-COPY include ./include
-COPY src ./src
-COPY tests ./tests
-COPY scripts ./scripts
-COPY lab/*.py ./lab/
-COPY ci ./ci
-RUN cmake -S . -B /opt/core-build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON \
+# Read-only context; copy only sources needed at test runtime in one layer.
+# No prepared SDK archives, .git or local credentials are persisted here.
+RUN --mount=type=bind,target=/context \
+    cp -a /context/CMakeLists.txt /context/include /context/src /context/tests /context/scripts /context/lab /src/ \
+ && cmake -S . -B /opt/core-build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON \
  && cmake --build /opt/core-build --parallel 2
 # Tests run on EVERY container invocation, even when all build layers are cached.
 CMD ["ctest", "--test-dir", "/opt/core-build", "--output-on-failure", "--no-tests=error"]
@@ -27,18 +24,17 @@ RUN apt-get update \
  && xargs -r apt-get install -y --no-install-recommends < /tmp/fs-packages.lock \
  && dpkg-query -W > /opt/build-manifest/fs-packages.tsv \
  && rm -rf /var/lib/apt/lists/* /tmp/fs-packages.lock
-COPY ci/build-public-fs.sh /tmp/build-public-fs.sh
-COPY ci/fs-sources.lock /tmp/expected-fs-sources.lock
-COPY .ci-sources/*.tar .ci-sources/SHA256SUMS .ci-sources/source-commits.txt /tmp/fs-sources/
-RUN bash /tmp/build-public-fs.sh
+# Public archives are read-only build inputs, not persistent image layers.
+RUN --mount=type=bind,source=.ci-sources,target=/tmp/fs-sources \
+    --mount=type=bind,source=ci,target=/tmp/ci \
+    bash /tmp/ci/build-public-fs.sh && rm -rf /opt/source
 ENV PKG_CONFIG_PATH=/opt/freeswitch/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/freeswitch/lib
 
 FROM fs-sdk AS fs-module
-COPY Makefile mod_event_kafka.cpp mod_event_kafka.hpp ./
-COPY include ./include
-COPY src ./src
-RUN make -j2 \
+RUN --mount=type=bind,target=/context \
+    cp -a /context/Makefile /context/mod_event_kafka.cpp /context/mod_event_kafka.hpp /context/include /context/src /src/ \
+ && make -j2 \
  && test -s mod_event_kafka.so \
  && ldd -r mod_event_kafka.so > /opt/build-manifest/module-linkage.txt \
  && ! grep -E 'not found|undefined symbol' /opt/build-manifest/module-linkage.txt

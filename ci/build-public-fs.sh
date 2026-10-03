@@ -6,7 +6,7 @@ export LD_LIBRARY_PATH=/opt/freeswitch/lib
 mkdir -p /opt/source /opt/build-manifest
 cd /tmp/fs-sources
 sha256sum -c SHA256SUMS
-cmp source-commits.txt /tmp/expected-fs-sources.lock
+cmp source-commits.txt /tmp/ci/fs-sources.lock
 for name in sofia-sip spandsp freeswitch; do tar -xf "$name.tar" -C /opt/source; done
 cp source-commits.txt SHA256SUMS /opt/build-manifest/
 (cd /opt/source/sofia-sip && ./bootstrap.sh && ./configure --prefix=/opt/freeswitch --without-glib --disable-static && make -j2 && make install)

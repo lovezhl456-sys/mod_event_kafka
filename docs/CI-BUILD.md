@@ -81,6 +81,10 @@ docker run --rm --network none event-kafka-fs-module
 The devcontainer uses `core-deps`, with repository-root context, for public core development. It no
 longer silently promises an authenticated SDK. Use the explicit fs-module target for SDK compile.
 Prepared source archives live in ignored `.ci-sources/`; they are not committed or credentials.
+The SDK build mounts these public inputs read-only and removes build-only source trees in the same
+RUN. Core and module builds mount the allowlisted source context read-only and copy only required
+source files in the same build RUN; prepared archives and private state are not persisted. This
+also limits full-tree layer duplication on vfs-backed executors.
 
 No registry or external cache is used. Local BuildKit cache contains only public source/dependencies
 and compiled outputs. Cold/hot builds and negative failure-propagation tests must be recorded on the
